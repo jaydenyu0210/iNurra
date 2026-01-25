@@ -17,10 +17,11 @@
     ],
     "ios": {
       "supportsTablet": true,
-      "bundleIdentifier": "com.healthcompanion.app",
+      "bundleIdentifier": "com.jaydenyu.healthcompanion",
       "infoPlist": {
         "NSCameraUsageDescription": "We need camera access to scan your medical documents",
-        "NSPhotoLibraryUsageDescription": "We need photo library access to upload medical documents"
+        "NSPhotoLibraryUsageDescription": "We need photo library access to upload medical documents",
+        "ITSAppUsesNonExemptEncryption": false
       }
     },
     "android": {
@@ -66,8 +67,9 @@
         "origin": false
       },
       "eas": {
-        "projectId": "your-project-id"
+        "projectId": "4318085b-501d-4e5f-9a9f-1770291ef29e"
       }
-    }
+    },
+    "owner": "jiaweiyu2009"
   }
 }
