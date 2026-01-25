@@ -145,15 +145,16 @@ serve(async (req) => {
 
         // Step 2: Classify and extract data with Gemini
         console.log('[Step 4] Classifying document with Gemini...');
-        const currentDate = new Date().toISOString().split('T')[0];
+        const currentTimestamp = new Date().toISOString();
         const currentYear = new Date().getFullYear();
 
         const promptWithContext = `${CLASSIFICATION_PROMPT}
 CONTEXT:
-- CURRENT DATE: ${currentDate}
+- CURRENT TIMESTAMP: ${currentTimestamp}
 - CURRENT YEAR: ${currentYear}
 - If a date is found without a year (e.g. "Jan 24"), USE THE CURRENT YEAR (${currentYear}).
-- If no date is found, use ${currentDate} as the recordedAt timestamp.
+- If no date/time is found in the document, USE "${currentTimestamp}" EXACTLY as the recordedAt timestamp.
+
 
 Text to analyze:
 ${extractedText}`;

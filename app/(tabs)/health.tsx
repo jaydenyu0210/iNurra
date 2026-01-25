@@ -230,6 +230,9 @@ export default function HealthScreen() {
                 </View>
             ) : (
                 <ScrollView style={styles.scrollView} showsVerticalScrollIndicator={false}>
+                    <View style={{ paddingHorizontal: tokens.spacing.lg, marginBottom: tokens.spacing.xs, marginTop: tokens.spacing.md }}>
+                        <Text variant="titleMedium" style={{ color: theme.colors.onBackground, fontWeight: '600' }}>Average</Text>
+                    </View>
                     {/* Metrics Type Selector */}
                     <ScrollView
                         horizontal
