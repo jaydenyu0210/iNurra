@@ -1,3 +1,4 @@
+
 import { useEffect } from 'react';
 import { Stack, useRouter, useSegments } from 'expo-router';
 import { StatusBar } from 'expo-status-bar';
@@ -50,23 +51,27 @@ function AuthProvider({ children }: { children: React.ReactNode }) {
     return <>{children}</>;
 }
 
+import { GestureHandlerRootView } from 'react-native-gesture-handler';
+
 export default function RootLayout() {
     return (
         <QueryClientProvider client={queryClient}>
             <SafeAreaProvider>
-                <PaperProvider theme={lightTheme}>
-                    <AuthProvider>
-                        <View style={styles.container}>
-                            <StatusBar style="dark" />
-                            <Stack screenOptions={{ headerShown: false }}>
-                                <Stack.Screen name="(tabs)" options={{ headerShown: false }} />
-                                <Stack.Screen name="documents" options={{ headerShown: false }} />
-                                <Stack.Screen name="chat" options={{ headerShown: false }} />
-                            </Stack>
-                            <GlobalFAB />
-                        </View>
-                    </AuthProvider>
-                </PaperProvider>
+                <GestureHandlerRootView style={{ flex: 1 }}>
+                    <PaperProvider theme={lightTheme}>
+                        <AuthProvider>
+                            <View style={styles.container}>
+                                <StatusBar style="dark" />
+                                <Stack screenOptions={{ headerShown: false }}>
+                                    <Stack.Screen name="(tabs)" options={{ headerShown: false }} />
+                                    <Stack.Screen name="documents" options={{ headerShown: false }} />
+                                    <Stack.Screen name="chat" options={{ headerShown: false }} />
+                                </Stack>
+                                <GlobalFAB />
+                            </View>
+                        </AuthProvider>
+                    </PaperProvider>
+                </GestureHandlerRootView>
             </SafeAreaProvider>
         </QueryClientProvider>
     );

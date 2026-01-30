@@ -67,6 +67,10 @@ export const useAuthStore = create<AuthState>((set, get) => ({
             set({ isLoading: false });
             return { error: null };
         }
+        if (!supabase) {
+            set({ isLoading: false });
+            return { error: new Error('Supabase client not initialized') };
+        }
         try {
             const { error } = await supabase.auth.signInWithOtp({
                 phone,
@@ -108,6 +112,11 @@ export const useAuthStore = create<AuthState>((set, get) => ({
             return { error: null };
         }
 
+        if (!supabase) {
+            set({ isLoading: false });
+            return { error: new Error('Supabase client not initialized') };
+        }
+
         try {
             const { data, error } = await supabase.auth.verifyOtp({
                 phone,
@@ -130,7 +139,9 @@ export const useAuthStore = create<AuthState>((set, get) => ({
     signOut: async () => {
         set({ isLoading: true });
         try {
-            await supabase.auth.signOut();
+            if (supabase) {
+                await supabase.auth.signOut();
+            }
             set({ session: null, user: null });
         } finally {
             set({ isLoading: false });
@@ -139,6 +150,12 @@ export const useAuthStore = create<AuthState>((set, get) => ({
 
     initialize: async () => {
         if (get().isInitialized) return;
+
+        if (!supabase) {
+            console.error('Supabase client not initialized');
+            set({ isInitialized: true });
+            return;
+        }
 
         try {
             const { data: { session } } = await supabase.auth.getSession();

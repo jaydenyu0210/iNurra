@@ -6,8 +6,10 @@ import { decode } from 'base64-arraybuffer';
 // Helper to get current user from Supabase or auth store (for dev mode)
 export async function getCurrentUser() {
     // First try Supabase
-    const { data: { user } } = await supabase.auth.getUser();
-    if (user) return user;
+    if (supabase) {
+        const { data: { user } } = await supabase.auth.getUser();
+        if (user) return user;
+    }
 
     // Fallback to auth store (for dev mock session)
     const storeUser = useAuthStore.getState().user;
