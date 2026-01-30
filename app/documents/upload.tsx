@@ -115,6 +115,7 @@ export default function UploadScreen() {
 
             // Step 2: Process document with Edge Function
             setUploadProgress(0.5);
+            console.log('Calling processDocument...');
             const result = await processDocument(documentId, storagePath);
 
             setUploadProgress(1);
@@ -198,7 +199,7 @@ export default function UploadScreen() {
             } else {
                 setStep('success');
             }
-        } catch (error) {
+        } catch (error: any) {
             console.error('Upload error:', error);
             alert('Failed to upload document. Please try again.');
             setIsUploading(false);

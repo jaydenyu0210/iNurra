@@ -1,6 +1,6 @@
 import { useState, useEffect, useCallback } from 'react';
 import { View, StyleSheet, ScrollView, RefreshControl, Alert } from 'react-native';
-import { Text, Card, Button, useTheme, IconButton, ActivityIndicator } from 'react-native-paper';
+import { Text, Card, Button, useTheme, IconButton, ActivityIndicator, Chip } from 'react-native-paper';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { useRouter } from 'expo-router';
 import { MaterialCommunityIcons } from '@expo/vector-icons';
@@ -12,6 +12,7 @@ import { deleteDocument } from '../../src/services/api';
 interface Document {
     id: string;
     type: string;
+    content_labels?: string[];
     file_name: string;
     title?: string;
     summary?: string;
@@ -28,12 +29,13 @@ export default function DocumentsListScreen() {
 
     const fetchDocuments = useCallback(async () => {
         if (!user?.id) return;
+        if (!supabase) return;
+        
         try {
             const { data: docs, error } = await supabase
                 .from('documents')
-                .select('id, type, file_name, title, summary, created_at')
+                .select('id, type, content_labels, file_name, title, summary, created_at')
                 .eq('user_id', user.id)
-                .in('type', ['test_result', 'discharge_summary', 'doctor_notes', 'audio_transcript', 'other'])
                 .order('created_at', { ascending: false });
 
             if (error) throw error;
@@ -80,15 +82,24 @@ export default function DocumentsListScreen() {
         );
     };
 
-    const getDocTypeIcon = (type: string) => {
+    const getDocTypeIcon = (type: string, labels?: string[]) => {
+        // Use primary type first
         switch (type) {
             case 'prescription': return 'pill';
             case 'test_result': return 'test-tube';
             case 'doctor_notes': return 'file-document';
             case 'discharge_summary': return 'hospital-building';
             case 'health_metrics': return 'heart-pulse';
-            default: return 'file';
+            case 'body_condition': return 'alert-circle';
+            case 'bodily_excretion': return 'water';
+            case 'todo_activity': return 'checkbox-marked-circle-outline';
         }
+        
+        // Fallback to checking labels if type is generic or matches specific conditions
+        if (labels?.includes('prescription')) return 'pill';
+        if (labels?.includes('health_metrics')) return 'heart-pulse';
+        
+        return 'file';
     };
 
     const formatDate = (dateStr: string) => {
@@ -131,15 +142,33 @@ export default function DocumentsListScreen() {
                         <Card key={doc.id} style={styles.card} mode="elevated" onPress={() => router.push(`/documents/${doc.id}`)} onLongPress={() => handleDeleteDocument(doc.id, doc.title || doc.file_name)}>
                             <Card.Content style={styles.cardContent}>
                                 <View style={[styles.iconBox, { backgroundColor: theme.colors.secondaryContainer }]}>
-                                    <MaterialCommunityIcons name={getDocTypeIcon(doc.type) as any} size={24} color={theme.colors.secondary} />
+                                    <MaterialCommunityIcons 
+                                        name={getDocTypeIcon(doc.type, doc.content_labels) as any} 
+                                        size={24} 
+                                        color={theme.colors.secondary} 
+                                    />
                                 </View>
                                 <View style={styles.info}>
-                                    <Text variant="titleMedium">
-                                        {doc.title || doc.type?.replace('_', ' ') || 'Untitled'}
+                                    <Text variant="titleMedium" numberOfLines={1}>
+                                        {doc.title || doc.file_name}
                                     </Text>
                                     <Text variant="bodySmall" style={{ color: theme.colors.onSurfaceVariant }}>
                                         {formatDate(doc.created_at)}
                                     </Text>
+                                    {doc.content_labels && doc.content_labels.length > 0 && (
+                                        <View style={styles.labelsRow}>
+                                            {doc.content_labels.slice(0, 3).map((label, idx) => (
+                                                <Text key={idx} variant="labelSmall" style={{ color: theme.colors.primary, marginRight: 8 }}>
+                                                    #{label.replace('_', ' ')}
+                                                </Text>
+                                            ))}
+                                            {doc.content_labels.length > 3 && (
+                                                <Text variant="labelSmall" style={{ color: theme.colors.primary }}>
+                                                    +{doc.content_labels.length - 3}
+                                                </Text>
+                                            )}
+                                        </View>
+                                    )}
                                 </View>
                                 <IconButton
                                     icon="delete-outline"
@@ -168,5 +197,6 @@ const styles = StyleSheet.create({
     cardContent: { flexDirection: 'row', alignItems: 'center' },
     iconBox: { width: 48, height: 48, borderRadius: 8, justifyContent: 'center', alignItems: 'center', marginRight: 16 },
     info: { flex: 1 },
+    labelsRow: { flexDirection: 'row', marginTop: 4 },
     emptyState: { alignItems: 'center', marginTop: 60 },
 });

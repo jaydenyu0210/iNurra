@@ -31,6 +31,12 @@ export default function HomeScreen() {
             route: '/documents/list',
         },
         {
+            title: 'Body Conditions',
+            icon: 'human',
+            color: '#FF7043', // Deep Orange
+            route: '/documents/list', // Initially route to list, could filter later
+        },
+        {
             title: 'Calendar',
             icon: 'calendar',
             color: '#FBBC04',

@@ -1,0 +1,6 @@
+# Configuration for process-document Edge Function
+# Disable JWT verification for development
+# NOTE: For production, consider re-enabling and implementing proper auth
+
+verify_jwt = false
+

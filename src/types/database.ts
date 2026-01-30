@@ -45,12 +45,14 @@ export type Database = {
                 Row: {
                     id: string;
                     user_id: string;
-                    type: 'prescription' | 'test_result' | 'discharge_summary' | 'doctor_notes' | 'health_metrics' | 'audio_transcript' | 'other';
+                    type: DocumentType;
+                    content_labels: string[];
                     storage_path: string;
                     file_name: string | null;
                     mime_type: string | null;
                     raw_text: string | null;
                     summary: string | null;
+                    title: string | null;
                     extracted_data: Json;
                     embedding: number[] | null;
                     processing_status: string;
@@ -60,12 +62,14 @@ export type Database = {
                 Insert: {
                     id?: string;
                     user_id: string;
-                    type: 'prescription' | 'test_result' | 'discharge_summary' | 'doctor_notes' | 'health_metrics' | 'audio_transcript' | 'other';
+                    type: DocumentType;
+                    content_labels?: string[];
                     storage_path: string;
                     file_name?: string | null;
                     mime_type?: string | null;
                     raw_text?: string | null;
                     summary?: string | null;
+                    title?: string | null;
                     extracted_data?: Json;
                     embedding?: number[] | null;
                     processing_status?: string;
@@ -75,12 +79,14 @@ export type Database = {
                 Update: {
                     id?: string;
                     user_id?: string;
-                    type?: 'prescription' | 'test_result' | 'discharge_summary' | 'doctor_notes' | 'health_metrics' | 'audio_transcript' | 'other';
+                    type?: DocumentType;
+                    content_labels?: string[];
                     storage_path?: string;
                     file_name?: string | null;
                     mime_type?: string | null;
                     raw_text?: string | null;
                     summary?: string | null;
+                    title?: string | null;
                     extracted_data?: Json;
                     embedding?: number[] | null;
                     processing_status?: string;
@@ -100,6 +106,9 @@ export type Database = {
                     start_date: string | null;
                     end_date: string | null;
                     is_active: boolean;
+                    quantity: number | null;
+                    duration_days: number | null;
+                    schedule: Json | null;
                     created_at: string;
                 };
                 Insert: {
@@ -113,6 +122,9 @@ export type Database = {
                     start_date?: string | null;
                     end_date?: string | null;
                     is_active?: boolean;
+                    quantity?: number | null;
+                    duration_days?: number | null;
+                    schedule?: Json | null;
                     created_at?: string;
                 };
                 Update: {
@@ -126,6 +138,9 @@ export type Database = {
                     start_date?: string | null;
                     end_date?: string | null;
                     is_active?: boolean;
+                    quantity?: number | null;
+                    duration_days?: number | null;
+                    schedule?: Json | null;
                     created_at?: string;
                 };
             };
@@ -169,10 +184,16 @@ export type Database = {
                     id: string;
                     user_id: string;
                     document_id: string | null;
+                    medication_id: string | null;
+                    todo_item_id: string | null;
                     title: string;
                     description: string | null;
-                    type: 'medication' | 'appointment' | 'todo' | 'reminder';
+                    type: EventType;
+                    source_type: SourceType;
+                    priority: Priority;
                     scheduled_at: string;
+                    end_time: string | null;
+                    duration_minutes: number | null;
                     reminder_at: string | null;
                     is_recurring: boolean;
                     recurrence_rule: string | null;
@@ -184,10 +205,16 @@ export type Database = {
                     id?: string;
                     user_id: string;
                     document_id?: string | null;
+                    medication_id?: string | null;
+                    todo_item_id?: string | null;
                     title: string;
                     description?: string | null;
-                    type: 'medication' | 'appointment' | 'todo' | 'reminder';
+                    type: EventType;
+                    source_type?: SourceType;
+                    priority?: Priority;
                     scheduled_at: string;
+                    end_time?: string | null;
+                    duration_minutes?: number | null;
                     reminder_at?: string | null;
                     is_recurring?: boolean;
                     recurrence_rule?: string | null;
@@ -199,10 +226,16 @@ export type Database = {
                     id?: string;
                     user_id?: string;
                     document_id?: string | null;
+                    medication_id?: string | null;
+                    todo_item_id?: string | null;
                     title?: string;
                     description?: string | null;
-                    type?: 'medication' | 'appointment' | 'todo' | 'reminder';
+                    type?: EventType;
+                    source_type?: SourceType;
+                    priority?: Priority;
                     scheduled_at?: string;
+                    end_time?: string | null;
+                    duration_minutes?: number | null;
                     reminder_at?: string | null;
                     is_recurring?: boolean;
                     recurrence_rule?: string | null;
@@ -241,7 +274,7 @@ export type Database = {
                 Row: {
                     id: string;
                     session_id: string;
-                    role: 'user' | 'assistant' | 'system';
+                    role: MessageRole;
                     content: string;
                     metadata: Json;
                     created_at: string;
@@ -249,7 +282,7 @@ export type Database = {
                 Insert: {
                     id?: string;
                     session_id: string;
-                    role: 'user' | 'assistant' | 'system';
+                    role: MessageRole;
                     content: string;
                     metadata?: Json;
                     created_at?: string;
@@ -257,7 +290,7 @@ export type Database = {
                 Update: {
                     id?: string;
                     session_id?: string;
-                    role?: 'user' | 'assistant' | 'system';
+                    role?: MessageRole;
                     content?: string;
                     metadata?: Json;
                     created_at?: string;
@@ -298,16 +331,213 @@ export type Database = {
                     created_at?: string;
                 };
             };
+            body_conditions: {
+                Row: {
+                    id: string;
+                    user_id: string;
+                    document_id: string | null;
+                    body_location: string;
+                    location_description: string | null;
+                    width_mm: number | null;
+                    height_mm: number | null;
+                    area_mm2: number | null;
+                    depth_mm: number | null;
+                    color: string | null;
+                    texture: string | null;
+                    shape: string | null;
+                    severity: Severity | null;
+                    condition_type: string | null;
+                    annotated_image_path: string | null;
+                    previous_observation_id: string | null;
+                    observed_at: string;
+                    notes: string | null;
+                    created_at: string;
+                };
+                Insert: {
+                    id?: string;
+                    user_id: string;
+                    document_id?: string | null;
+                    body_location: string;
+                    location_description?: string | null;
+                    width_mm?: number | null;
+                    height_mm?: number | null;
+                    area_mm2?: number | null;
+                    depth_mm?: number | null;
+                    color?: string | null;
+                    texture?: string | null;
+                    shape?: string | null;
+                    severity?: Severity | null;
+                    condition_type?: string | null;
+                    annotated_image_path?: string | null;
+                    previous_observation_id?: string | null;
+                    observed_at?: string;
+                    notes?: string | null;
+                    created_at?: string;
+                };
+                Update: {
+                    id?: string;
+                    user_id?: string;
+                    document_id?: string | null;
+                    body_location?: string;
+                    location_description?: string | null;
+                    width_mm?: number | null;
+                    height_mm?: number | null;
+                    area_mm2?: number | null;
+                    depth_mm?: number | null;
+                    color?: string | null;
+                    texture?: string | null;
+                    shape?: string | null;
+                    severity?: Severity | null;
+                    condition_type?: string | null;
+                    annotated_image_path?: string | null;
+                    previous_observation_id?: string | null;
+                    observed_at?: string;
+                    notes?: string | null;
+                    created_at?: string;
+                };
+            };
+            bodily_excretions: {
+                Row: {
+                    id: string;
+                    user_id: string;
+                    document_id: string | null;
+                    excretion_type: ExcretionType;
+                    color: string | null;
+                    consistency: string | null;
+                    volume_ml: number | null;
+                    frequency_per_day: number | null;
+                    blood_present: boolean;
+                    pain_level: number | null;
+                    abnormality_indicators: string[] | null;
+                    observed_at: string;
+                    notes: string | null;
+                    created_at: string;
+                };
+                Insert: {
+                    id?: string;
+                    user_id: string;
+                    document_id?: string | null;
+                    excretion_type: ExcretionType;
+                    color?: string | null;
+                    consistency?: string | null;
+                    volume_ml?: number | null;
+                    frequency_per_day?: number | null;
+                    blood_present?: boolean;
+                    pain_level?: number | null;
+                    abnormality_indicators?: string[] | null;
+                    observed_at?: string;
+                    notes?: string | null;
+                    created_at?: string;
+                };
+                Update: {
+                    id?: string;
+                    user_id?: string;
+                    document_id?: string | null;
+                    excretion_type?: ExcretionType;
+                    color?: string | null;
+                    consistency?: string | null;
+                    volume_ml?: number | null;
+                    frequency_per_day?: number | null;
+                    blood_present?: boolean;
+                    pain_level?: number | null;
+                    abnormality_indicators?: string[] | null;
+                    observed_at?: string;
+                    notes?: string | null;
+                    created_at?: string;
+                };
+            };
+            todo_items: {
+                Row: {
+                    id: string;
+                    user_id: string;
+                    document_id: string | null;
+                    calendar_event_id: string | null;
+                    title: string;
+                    description: string | null;
+                    priority: Priority;
+                    due_date: string | null;
+                    due_time: string | null;
+                    scheduled_datetime: string | null;
+                    is_recurring: boolean;
+                    recurrence_rule: string | null;
+                    completed: boolean;
+                    completed_at: string | null;
+                    created_at: string;
+                };
+                Insert: {
+                    id?: string;
+                    user_id: string;
+                    document_id?: string | null;
+                    calendar_event_id?: string | null;
+                    title: string;
+                    description?: string | null;
+                    priority?: Priority;
+                    due_date?: string | null;
+                    due_time?: string | null;
+                    scheduled_datetime?: string | null;
+                    is_recurring?: boolean;
+                    recurrence_rule?: string | null;
+                    completed?: boolean;
+                    completed_at?: string | null;
+                    created_at?: string;
+                };
+                Update: {
+                    id?: string;
+                    user_id?: string;
+                    document_id?: string | null;
+                    calendar_event_id?: string | null;
+                    title?: string;
+                    description?: string | null;
+                    priority?: Priority;
+                    due_date?: string | null;
+                    due_time?: string | null;
+                    scheduled_datetime?: string | null;
+                    is_recurring?: boolean;
+                    recurrence_rule?: string | null;
+                    completed?: boolean;
+                    completed_at?: string | null;
+                    created_at?: string;
+                };
+            };
         };
         Views: {};
         Functions: {};
         Enums: {
-            document_type: 'prescription' | 'test_result' | 'discharge_summary' | 'doctor_notes' | 'health_metrics' | 'audio_transcript' | 'other';
-            event_type: 'medication' | 'appointment' | 'todo' | 'reminder';
-            message_role: 'user' | 'assistant' | 'system';
+            document_type: DocumentType;
+            event_type: EventType;
+            message_role: MessageRole;
+            source_type: SourceType;
+            priority: Priority;
+            severity: Severity;
+            excretion_type: ExcretionType;
         };
     };
 };
+
+// Enum types
+export type DocumentType = 
+    | 'prescription' 
+    | 'test_result' 
+    | 'discharge_summary' 
+    | 'doctor_notes' 
+    | 'health_metrics' 
+    | 'audio_transcript' 
+    | 'body_condition'
+    | 'bodily_excretion'
+    | 'todo_activity'
+    | 'other';
+
+export type EventType = 'medication' | 'appointment' | 'todo' | 'reminder';
+
+export type MessageRole = 'user' | 'assistant' | 'system';
+
+export type SourceType = 'prescription' | 'todo' | 'appointment' | 'manual';
+
+export type Priority = 'low' | 'medium' | 'high' | 'urgent';
+
+export type Severity = 'mild' | 'moderate' | 'severe' | 'critical';
+
+export type ExcretionType = 'stool' | 'urine' | 'vomit' | 'blood' | 'mucus' | 'discharge' | 'other';
 
 // Helper types
 export type Tables<T extends keyof Database['public']['Tables']> = Database['public']['Tables'][T]['Row'];
@@ -324,3 +554,107 @@ export type CalendarEvent = Tables<'calendar_events'>;
 export type ChatSession = Tables<'chat_sessions'>;
 export type ChatMessage = Tables<'chat_messages'>;
 export type EmergencyContact = Tables<'emergency_contacts'>;
+export type BodyCondition = Tables<'body_conditions'>;
+export type BodilyExcretion = Tables<'bodily_excretions'>;
+export type TodoItem = Tables<'todo_items'>;
+
+// Extracted data types from document processing
+export interface ExtractedMedication {
+    name: string;
+    dosage: string | null;
+    quantity: number | null;
+    frequencyHours: number | null;
+    durationDays: number | null;
+    startDate: string;
+    endDate: string | null;
+    instructions: string | null;
+    schedule: string[];
+    calendarEvents: {
+        title: string;
+        scheduledAt: string;
+        reminderAt: string | null;
+        isRecurring: boolean;
+        recurrenceRule: string;
+    }[];
+}
+
+export interface ExtractedMetric {
+    name: string;
+    value: number;
+    unit: string;
+    recordedAt: string;
+    isAbnormal: boolean | null;
+    referenceRange: string | null;
+}
+
+export interface ExtractedTodo {
+    title: string;
+    description: string | null;
+    priority: Priority;
+    dueDate: string | null;
+    dueTime: string | null;
+    isRecurring: boolean;
+    recurrenceRule: string | null;
+    calendarEvent: {
+        title: string;
+        scheduledAt: string;
+        reminderAt: string | null;
+        type: 'todo';
+    } | null;
+}
+
+export interface ExtractedBodyCondition {
+    bodyLocation: string;
+    locationDescription: string;
+    conditionType: string;
+    color: string | null;
+    texture: string | null;
+    shape: string | null;
+    severity: Severity;
+    dimensions: {
+        widthMm: number | null;
+        heightMm: number | null;
+        areaMm2: number | null;
+        depthMm: number | null;
+        estimationMethod: string;
+    };
+    rulerAnnotation: {
+        shouldAddRuler: boolean;
+        suggestedScale: string;
+        boundingBox: {
+            x: number;
+            y: number;
+            width: number;
+            height: number;
+        };
+    };
+    notes: string | null;
+}
+
+export interface ExtractedBodilyExcretion {
+    excretionType: ExcretionType;
+    color: string | null;
+    consistency: string | null;
+    volumeMl: number | null;
+    frequencyPerDay: number | null;
+    bloodPresent: boolean;
+    painLevel: number | null;
+    abnormalityIndicators: string[];
+    observedAt: string;
+    notes: string | null;
+}
+
+export interface DocumentExtractedData {
+    contentLabels: string[];
+    primaryType: DocumentType;
+    title: string;
+    summary: string;
+    medications?: ExtractedMedication[];
+    metrics?: ExtractedMetric[];
+    todos?: ExtractedTodo[];
+    bodyConditions?: ExtractedBodyCondition[];
+    bodilyExcretions?: ExtractedBodilyExcretion[];
+    keyPoints?: string[];
+    diagnoses?: string[];
+    treatmentPlan?: string | null;
+}
