@@ -1,4 +1,5 @@
 import { serve } from 'https://deno.land/std@0.168.0/http/server.ts';
+import { Image } from 'https://deno.land/x/imagescript@1.2.15/mod.ts';
 import {
     corsHeaders,
     getServiceClient,
@@ -6,6 +7,24 @@ import {
     callGeminiMultimodal,
     generateEmbedding,
 } from '../_shared/utils.ts';
+
+const DETECTION_PROMPT = `
+You are an expert medical image analyzer. Your task is to DETECT if there is a visible body condition (wound, rash, bruise, mole, lesion, swelling, etc.) in the image.
+
+Analyze the image and return a JSON object with this EXACT structure:
+
+{
+  "hasBodyCondition": boolean,
+  "boundingBox": {
+    "x": number,  // Percentage from left (0-100)
+    "y": number,  // Percentage from top (0-100)
+    "width": number,  // Percentage of image width
+    "height": number  // Percentage of image height
+  } | null
+}
+
+Return ONLY the raw JSON.
+`;
 
 const CLASSIFICATION_PROMPT = `
 You are an expert medical document and health image analyzer. Your task is to perform MULTI-LABEL classification - identify ALL applicable content types present in the uploaded image/document.
@@ -29,6 +48,7 @@ Analyze the image and select EVERY applicable label from this list:
 5. **body_condition** - Physical body marks, wounds, rashes, moles, bruises, skin conditions
    - Look for: Photos of skin, wounds, rashes, lesions, bruises, swelling, any visible body condition
    - IMPORTANT: If this is a photo of a body part showing any condition, mark/wound/rash, classify as body_condition
+   - **CRITICAL SUMMARY REQUIREMENT**: For body conditions, the summary MUST be highly descriptive. You MUST describe the SIZE (cm/mm), COLOR (e.g., "erythematous with purplish center"), SHAPE (e.g., "irregular ovoid borders"), and TEXTURE (e.g., "raised, scaly surface").
 
 6. **bodily_excretion** - Photos or descriptions of bodily outputs
    - Look for: Stool, urine, vomit, blood, mucus, discharge - photos or descriptions
@@ -116,7 +136,7 @@ Return a JSON object with this EXACT structure:
     },
     "rulerAnnotation": {
       "shouldAddRuler": true,
-      "suggestedScale": "string",  // e.g., "1cm grid", "5mm marks"
+      "suggestedScale": "string",  // e.g., "1cm grid", "5mm marks", "bounding_box"
       "boundingBox": {
         "x": "number",  // Percentage from left (0-100)
         "y": "number",  // Percentage from top (0-100)
@@ -156,6 +176,7 @@ Return a JSON object with this EXACT structure:
    - Look for reference objects (coins, fingers, rulers) to estimate size
    - If a ruler is visible, use it for exact measurements
    - Provide estimation method used
+   - **RETURN BOUNDING BOX**: Use 0-100 percentage coordinates for the region of interest.
 
 3. **CALENDAR INTEGRATION**:
    - Prescriptions should generate calendar events for each dose
@@ -177,6 +198,7 @@ Return ONLY the raw JSON, no markdown code blocks.
 interface ProcessDocumentRequest {
     documentId: string;
     storagePath: string;
+    userDescription?: string; // Optional user-provided context
 }
 
 serve(async (req) => {
@@ -186,7 +208,8 @@ serve(async (req) => {
     }
 
     try {
-        const { documentId, storagePath }: ProcessDocumentRequest = await req.json();
+        const { documentId, storagePath, userDescription }: ProcessDocumentRequest = await req.json();
+        console.log(`[Process Document v2.0] Processing documentId: ${documentId}, storagePath: ${storagePath}`);
 
         if (!documentId || !storagePath) {
             return new Response(
@@ -248,7 +271,7 @@ serve(async (req) => {
         if (!imageResponse.ok) {
             throw new Error(`Failed to download image: ${imageResponse.status}`);
         }
-        
+
         const imageBuffer = await imageResponse.arrayBuffer();
         const uint8Array = new Uint8Array(imageBuffer);
         let binary = '';
@@ -271,6 +294,9 @@ serve(async (req) => {
         tomorrow.setDate(tomorrow.getDate() + 1);
         const tomorrowStr = tomorrow.toISOString().split('T')[0];
 
+        // Step 2.5: Removed separate detection. We rely on the main classification.
+
+
         const contextPrompt = `
 CONTEXT:
 - CURRENT TIMESTAMP: ${currentTimestamp}
@@ -280,7 +306,8 @@ CONTEXT:
 - If no date/time is found, USE "${currentTimestamp}" as the timestamp.
 
 ${extractedText ? `EXTRACTED TEXT FROM DOCUMENT:\n${extractedText}\n\n` : ''}
-Analyze the image above along with any extracted text and provide the multi-label classification.`;
+${userDescription ? `USER DESCRIPTION/CONTEXT:\n"${userDescription}"\n\n` : ''}
+Analyze the image above along with any extracted text and user description to provide the multi-label classification.`;
 
         const parts = [
             {
@@ -290,6 +317,7 @@ Analyze the image above along with any extracted text and provide the multi-labe
                 }
             },
             { text: contextPrompt }
+
         ];
 
         const classificationResponse = await callGeminiMultimodal(parts, CLASSIFICATION_PROMPT);
@@ -328,6 +356,62 @@ Analyze the image above along with any extracted text and provide the multi-labe
             extractedData.contentLabels = extractedData.primaryType ? [extractedData.primaryType] : ['other'];
         }
 
+        // Step 3.5: Post-Classification Annotation
+        // Check if classification identified a body condition and requested a ruler
+        const rulerAnnotation = extractedData.bodyConditions?.[0]?.rulerAnnotation;
+        if (rulerAnnotation && rulerAnnotation.boundingBox) {
+            console.log("Body condition identified in classification. Drawing overlay...");
+            try {
+                const box = rulerAnnotation.boundingBox;
+
+                // Decode image from original download
+                const image = await Image.decode(uint8Array);
+
+                // Convert % to pixels and round to integers
+                const x = Math.round((box.x / 100) * image.width);
+                const y = Math.round((box.y / 100) * image.height);
+                const w = Math.round((box.width / 100) * image.width);
+                const h = Math.round((box.height / 100) * image.height);
+
+                console.log(`Drawing box at x=${x}, y=${y}, w=${w}, h=${h}`);
+
+                // Draw Red Bounding Box (Thicker for visibility)
+                const thickness = 5;
+                image.drawBox(x, y, w, thickness, 0xFF0000FF); // Top
+                image.drawBox(x, y + h, w, thickness, 0xFF0000FF); // Bottom
+                image.drawBox(x, y, thickness, h, 0xFF0000FF); // Left
+                image.drawBox(x + w, y, thickness, h, 0xFF0000FF); // Right
+
+                // Draw "Ruler" Ticks
+                for (let i = 0; i <= 10; i++) {
+                    const tickX = x + (w * (i / 10));
+                    image.drawBox(Math.round(tickX), y + h, 3, 15, 0xFF0000FF);
+                }
+
+                // Encode back
+                const processedBuffer = await image.encode();
+
+                // Overwrite in storage
+                console.log('Overwriting original image with annotated version...');
+                const { data: uploadData, error: uploadError } = await supabase.storage
+                    .from('documents')
+                    .upload(storagePath, processedBuffer, {
+                        contentType: mimeType,
+                        upsert: true
+                    });
+
+                if (uploadError) {
+                    console.error('FAILED to overwrite image in storage:', uploadError);
+                } else {
+                    console.log('Successfully overwrote image:', uploadData);
+                }
+            } catch (annoError) {
+                console.error("Annotation logic crashed:", annoError);
+            }
+        } else {
+            console.log("No body conditions with ruler request found. Skipping annotation.");
+        }
+
         // Step 4: Generate embedding for RAG
         console.log('[Step 6] Generating embedding...');
         const textForEmbedding = [
@@ -335,7 +419,7 @@ Analyze the image above along with any extracted text and provide the multi-labe
             extractedData.title || '',
             extractedText || ''
         ].filter(Boolean).join('\n').slice(0, 5000);
-        
+
         const embedding = textForEmbedding ? await generateEmbedding(textForEmbedding) : [];
 
         // Step 5: Update document in database with extracted data

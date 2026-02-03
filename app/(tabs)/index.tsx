@@ -34,7 +34,7 @@ export default function HomeScreen() {
             title: 'Body Conditions',
             icon: 'human',
             color: '#FF7043', // Deep Orange
-            route: '/documents/list', // Initially route to list, could filter later
+            route: '/(tabs)/body-conditions',
         },
         {
             title: 'Calendar',
@@ -92,17 +92,7 @@ export default function HomeScreen() {
                                     {block.title}
                                 </Text>
                             </View>
-                            {block.title !== 'Calendar' && (
-                                <IconButton
-                                    icon="plus"
-                                    mode="contained-tonal"
-                                    size={24}
-                                    onPress={(e) => {
-                                        e.stopPropagation();
-                                        router.push('/documents/upload');
-                                    }}
-                                />
-                            )}
+
                         </Card.Content>
                     </Card>
                 ))}
@@ -134,6 +124,7 @@ const styles = StyleSheet.create({
         padding: tokens.spacing.lg,
         gap: tokens.spacing.lg,
         paddingTop: tokens.spacing.sm,
+        paddingBottom: 100, // Add padding for footer
     },
     card: {
         borderRadius: tokens.radius.xl,

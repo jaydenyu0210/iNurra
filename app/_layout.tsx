@@ -8,7 +8,7 @@ import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { View, StyleSheet } from 'react-native';
 import { useAuth } from '../src/hooks';
 import { lightTheme } from '../src/theme';
-import { GlobalFAB } from '../src/components/GlobalFAB';
+import { AppFooter } from '../src/components/AppFooter';
 
 const queryClient = new QueryClient();
 
@@ -67,7 +67,7 @@ export default function RootLayout() {
                                     <Stack.Screen name="documents" options={{ headerShown: false }} />
                                     <Stack.Screen name="chat" options={{ headerShown: false }} />
                                 </Stack>
-                                <GlobalFAB />
+                                <AppFooter />
                             </View>
                         </AuthProvider>
                     </PaperProvider>

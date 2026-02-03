@@ -5,9 +5,11 @@ import { SafeAreaView } from 'react-native-safe-area-context';
 import { useRouter, Stack } from 'expo-router';
 import { MaterialCommunityIcons } from '@expo/vector-icons';
 import * as ImagePicker from 'expo-image-picker';
+import { Audio } from 'expo-av';
+import * as FileSystem from 'expo-file-system';
 import { tokens } from '../../src/theme';
 import { supabase } from '../../src/services/supabase';
-import { getCurrentUser } from '../../src/services/api';
+import { getCurrentUser, transcribeAudio } from '../../src/services/api';
 
 type DocumentType = 'prescription' | 'test_result' | 'discharge_summary' | 'doctor_notes' | 'health_metrics';
 
@@ -38,13 +40,23 @@ export default function UploadScreen() {
         extractedData?: any;
         medications?: any[]; // Allow for top-level medications
     } | null>(null);
-    const [step, setStep] = useState<'select' | 'type' | 'uploading' | 'review' | 'success'>('select');
+    const [step, setStep] = useState<'select' | 'describe' | 'uploading' | 'review' | 'success'>('select');
+
+    // Description State
+    const [userDescription, setUserDescription] = useState('');
+    const [isRecording, setIsRecording] = useState(false);
+    const [recording, setRecording] = useState<Audio.Recording | null>(null);
+    const [isTranscribing, setIsTranscribing] = useState(false);
 
     // Medication Review State
     const [reviewMeds, setReviewMeds] = useState<any[]>([]);
 
     // Metrics Review State
     const [reviewMetrics, setReviewMetrics] = useState<any[]>([]);
+
+    // Body Conditions Review State
+    const [reviewBodyConditions, setReviewBodyConditions] = useState<any[]>([]);
+    const [reviewBodilyExcretions, setReviewBodilyExcretions] = useState<any[]>([]);
 
     const [isSaving, setIsSaving] = useState(false);
 
@@ -85,13 +97,75 @@ export default function UploadScreen() {
 
             if (!result.canceled && result.assets[0]) {
                 setImage(result.assets[0].uri);
-                setStep('uploading');
+                setStep('describe'); // Go to description step instead of straight to uploading
             }
         } catch (error) {
             console.error('Error picking image:', error);
             alert('Failed to pick image');
         }
     }, []);
+
+    // Audio Recording Functions
+    async function startRecording() {
+        try {
+            console.log('Requesting permissions..');
+            const permission = await Audio.requestPermissionsAsync();
+            if (permission.status !== 'granted') {
+                alert('Microphone permission required');
+                return;
+            }
+
+            await Audio.setAudioModeAsync({
+                allowsRecordingIOS: true,
+                playsInSilentModeIOS: true,
+            });
+
+            console.log('Starting recording..');
+            const { recording } = await Audio.Recording.createAsync(
+                Audio.RecordingOptionsPresets.HIGH_QUALITY
+            );
+            setRecording(recording);
+            setIsRecording(true);
+            console.log('Recording started');
+        } catch (err) {
+            console.error('Failed to start recording', err);
+        }
+    }
+
+    async function stopRecording() {
+        console.log('Stopping recording..');
+        setRecording(null);
+        setIsRecording(false);
+        try {
+            if (!recording) return;
+            await recording.stopAndUnloadAsync();
+            const uri = recording.getURI();
+            console.log('Recording stopped and stored at', uri);
+            if (uri) {
+                transcribeRecording(uri);
+            }
+        } catch (error) {
+            console.error(error);
+        }
+    }
+
+    async function transcribeRecording(uri: string) {
+        setIsTranscribing(true);
+        try {
+            const base64Audio = await FileSystem.readAsStringAsync(uri, {
+                encoding: 'base64',
+            });
+            const result = await transcribeAudio(base64Audio);
+            if (result && result.text) {
+                setUserDescription(prev => (prev ? prev + ' ' + result.text : result.text));
+            }
+        } catch (error) {
+            console.error('Transcription failed:', error);
+            alert('Failed to transcribe audio.');
+        } finally {
+            setIsTranscribing(false);
+        }
+    }
 
     const handleUpload = async () => {
         if (!image) return;
@@ -116,11 +190,18 @@ export default function UploadScreen() {
             // Step 2: Process document with Edge Function
             setUploadProgress(0.5);
             console.log('Calling processDocument...');
-            const result = await processDocument(documentId, storagePath);
+            const result = await processDocument(documentId, storagePath, userDescription);
 
             setUploadProgress(1);
             setProcessingResult(result);
             setIsUploading(false);
+
+            // Update image to point to the processed version (with overlay)
+            // Add timestamp to force refresh since backend overwrites the file
+            if (supabase) {
+                const { data: { publicUrl } } = supabase.storage.from('documents').getPublicUrl(storagePath);
+                setImage(`${publicUrl}?t=${Date.now()}`);
+            }
 
             console.log('Processed result:', JSON.stringify(result, null, 2));
 
@@ -142,11 +223,17 @@ export default function UploadScreen() {
                 result.metrics ||
                 [];
 
+            const extractedBodyConditions = result.extractedData?.bodyConditions || [];
+            const extractedBodilyExcretions = result.extractedData?.bodilyExcretions || [];
+            const contentLabels = result.extractedData?.contentLabels || [];
+
             console.log('=== MEDICATION EXTRACTION DEBUG ===');
             console.log('Document type:', docType);
             console.log('result.extractedData:', JSON.stringify(result.extractedData, null, 2));
             console.log('extractedMeds.length:', extractedMeds.length);
             console.log('extractedMetrics.length:', extractedMetrics.length);
+            console.log('extractedBodyConditions.length:', extractedBodyConditions.length);
+            console.log('extractedBodilyExcretions.length:', extractedBodilyExcretions.length);
 
             if (extractedMeds.length > 0 || docType === 'prescription') {
                 let medsToReview = [];
@@ -195,6 +282,18 @@ export default function UploadScreen() {
                     metricsToReview = [{ name: '', value: '', unit: '', recordedAt: new Date().toISOString() }];
                 }
                 setReviewMetrics(metricsToReview);
+                setStep('review');
+            } else if (extractedBodyConditions.length > 0 || contentLabels.includes('body_condition')) {
+                setReviewBodyConditions(extractedBodyConditions.map((c: any) => ({
+                    ...c,
+                    observedAt: c.observedAt || new Date().toISOString()
+                })));
+                setStep('review');
+            } else if (extractedBodilyExcretions.length > 0 || contentLabels.includes('bodily_excretion')) {
+                setReviewBodilyExcretions(extractedBodilyExcretions.map((e: any) => ({
+                    ...e,
+                    observedAt: e.observedAt || e.observed_at || new Date().toISOString()
+                })));
                 setStep('review');
             } else {
                 setStep('success');
@@ -255,8 +354,19 @@ export default function UploadScreen() {
         setReviewMetrics(updated);
     };
 
+    const handleUpdateBodyCondition = (index: number, field: string, value: string) => {
+        const updated = [...reviewBodyConditions];
+        updated[index] = { ...updated[index], [field]: value };
+        setReviewBodyConditions(updated);
+    };
+
     const handleConfirmReview = async () => {
         setIsSaving(true);
+        if (!supabase) {
+            alert('Database connection error');
+            setIsSaving(false);
+            return;
+        }
         try {
             // Use the reliable state variable
             const documentId = uploadedDocId;
@@ -308,6 +418,49 @@ export default function UploadScreen() {
                 }));
                 const { error: metricError } = await supabase.from('health_metrics').insert(metricsToInsert as any);
                 if (metricError) throw metricError;
+            }
+
+            // Body Conditions Insertion
+            if (reviewBodyConditions.length > 0) {
+                const conditionsToInsert = reviewBodyConditions.map(c => ({
+                    user_id: userId,
+                    document_id: documentId,
+                    body_location: c.bodyLocation || c.body_location || 'unknown',
+                    location_description: c.locationDescription || c.location_description,
+                    width_mm: c.dimensions?.widthMm || c.width_mm,
+                    height_mm: c.dimensions?.heightMm || c.height_mm,
+                    area_mm2: c.dimensions?.areaMm2 || c.area_mm2,
+                    depth_mm: c.dimensions?.depthMm || c.depth_mm,
+                    color: c.color,
+                    texture: c.texture,
+                    shape: c.shape,
+                    severity: c.severity,
+                    condition_type: c.conditionType || c.condition_type,
+                    notes: c.notes,
+                    observed_at: c.observedAt || c.observed_at || new Date().toISOString(),
+                }));
+                const { error: conditionError } = await supabase.from('body_conditions').insert(conditionsToInsert as any);
+                if (conditionError) throw conditionError;
+            }
+
+            // Bodily Excretions Insertion
+            if (reviewBodilyExcretions.length > 0) {
+                const excretionsToInsert = reviewBodilyExcretions.map(e => ({
+                    user_id: userId,
+                    document_id: documentId,
+                    excretion_type: e.excretionType || e.excretion_type || 'other',
+                    color: e.color,
+                    consistency: e.consistency,
+                    volume_ml: e.volumeMl || e.volume_ml,
+                    frequency_per_day: e.frequencyPerDay || e.frequency_per_day,
+                    blood_present: e.bloodPresent || e.blood_present || false,
+                    pain_level: e.painLevel || e.pain_level,
+                    abnormality_indicators: e.abnormalityIndicators || e.abnormality_indicators,
+                    notes: e.notes,
+                    observed_at: e.observedAt || e.observed_at || new Date().toISOString(),
+                }));
+                const { error: excretionError } = await supabase.from('bodily_excretions').insert(excretionsToInsert as any);
+                if (excretionError) throw excretionError;
             }
 
             // Generate Calendar Schedule
@@ -421,6 +574,8 @@ export default function UploadScreen() {
             target = '/(tabs)/health';
         } else if (reviewMeds.length > 0) {
             target = '/(tabs)/medications';
+        } else if (reviewBodyConditions?.length > 0 || reviewBodilyExcretions?.length > 0) {
+            target = '/(tabs)/body-conditions';
         }
 
         // Dismiss all screens in upload flow, then replace with target
@@ -433,8 +588,12 @@ export default function UploadScreen() {
         setImage(null);
         setSelectedType(null);
         setUploadProgress(0);
+        setUserDescription(''); // Reset description
         setStep('select');
         setReviewMeds([]);
+        setReviewMetrics([]);
+        setReviewBodyConditions([]);
+        setReviewBodilyExcretions([]);
         setUploadedDocId(null); // Reset ID
     };
 
@@ -486,6 +645,52 @@ export default function UploadScreen() {
                             </Card>
                         </View>
                     </>
+                )}
+
+                {step === 'describe' && image && (
+                    <KeyboardAvoidingView behavior={Platform.OS === 'ios' ? 'padding' : 'height'} style={{ flex: 1 }}>
+                        <Text variant="headlineSmall" style={{ textAlign: 'center', marginBottom: 16 }}>Describe the Photo</Text>
+
+                        <View style={{ alignItems: 'center', marginBottom: 20 }}>
+                            <Image source={{ uri: image }} style={{ width: 200, height: 200, borderRadius: 12, resizeMode: 'cover' }} />
+                        </View>
+
+
+
+                        <TextInput
+                            label="Description"
+                            value={userDescription}
+                            onChangeText={setUserDescription}
+                            mode="outlined"
+                            multiline
+                            style={[styles.input, { minHeight: 100 }]}
+                            placeholder="e.g. 'This rash appeared yesterday after hiking...'"
+                        />
+
+                        <View style={{ flexDirection: 'row', justifyContent: 'center', alignItems: 'center', marginVertical: 20, gap: 20 }}>
+                            <Button
+                                mode={isRecording ? "contained" : "outlined"}
+                                onPress={isRecording ? stopRecording : startRecording}
+                                icon={isRecording ? "stop" : "microphone"}
+                                buttonColor={isRecording ? theme.colors.error : undefined}
+                                disabled={isTranscribing}
+                            >
+                                {isRecording ? "Stop Recording" : "Record Voice"}
+                            </Button>
+                            {isTranscribing && <ActivityIndicator size="small" />}
+                        </View>
+
+                        <Button
+                            mode="contained"
+                            onPress={() => setStep('uploading')}
+                            style={{ marginTop: 20, paddingVertical: 6 }}
+                            loading={isTranscribing}
+                            disabled={isTranscribing}
+                        >
+                            Upload
+                        </Button>
+
+                    </KeyboardAvoidingView>
                 )}
 
                 {step === 'uploading' && (
@@ -617,6 +822,88 @@ export default function UploadScreen() {
                     </KeyboardAvoidingView>
                 )}
 
+                {step === 'review' && reviewBodyConditions.length > 0 && (
+                    <KeyboardAvoidingView behavior={Platform.OS === 'ios' ? 'padding' : 'height'}>
+                        <Text variant="bodyMedium" style={{ marginBottom: 16, textAlign: 'center', color: theme.colors.onSurfaceVariant }}>
+                            Review detected body condition.
+                        </Text>
+
+                        {/* Show Image with Overlay */}
+                        {image && (
+                            <Image
+                                source={{ uri: image }}
+                                style={{ width: '100%', height: 250, borderRadius: 12, marginBottom: 16, resizeMode: 'contain', backgroundColor: '#000' }}
+                            />
+                        )}
+
+                        {/* Global Summary Display */}
+                        {processingResult?.summary && (
+                            <Card style={[styles.reviewCard, { backgroundColor: theme.colors.surfaceVariant }]}>
+                                <Card.Content>
+                                    <Text variant="labelMedium" style={{ color: theme.colors.onSurfaceVariant }}>AI Summary</Text>
+                                    <Text variant="bodyMedium" style={{ marginTop: 4 }}>{processingResult.summary}</Text>
+                                </Card.Content>
+                            </Card>
+                        )}
+
+                        {reviewBodyConditions.map((condition, index) => (
+                            <Card key={index} style={styles.reviewCard}>
+                                <Card.Title title="Condition Details" left={(props) => <MaterialCommunityIcons {...props} name="account-injury" />} />
+                                <Card.Content>
+                                    <TextInput
+                                        label="Location"
+                                        value={condition.bodyLocation}
+                                        onChangeText={(text) => handleUpdateBodyCondition(index, 'bodyLocation', text)}
+                                        style={styles.input}
+                                        mode="outlined"
+                                    />
+                                    <TextInput
+                                        label="Type"
+                                        value={condition.conditionType}
+                                        onChangeText={(text) => handleUpdateBodyCondition(index, 'conditionType', text)}
+                                        style={styles.input}
+                                        mode="outlined"
+                                    />
+                                    <TextInput
+                                        label="Notes / Description"
+                                        value={condition.notes || processingResult?.summary || ''}
+                                        onChangeText={(text) => handleUpdateBodyCondition(index, 'notes', text)}
+                                        style={[styles.input, { minHeight: 80 }]}
+                                        mode="outlined"
+                                        multiline
+                                    />
+                                    <View style={{ flexDirection: 'row', gap: 10 }}>
+                                        <TextInput
+                                            label="Severity"
+                                            value={condition.severity}
+                                            onChangeText={(text) => handleUpdateBodyCondition(index, 'severity', text)}
+                                            style={[styles.input, { flex: 1 }]}
+                                            mode="outlined"
+                                        />
+                                        <TextInput
+                                            label="Color"
+                                            value={condition.color}
+                                            onChangeText={(text) => handleUpdateBodyCondition(index, 'color', text)}
+                                            style={[styles.input, { flex: 1 }]}
+                                            mode="outlined"
+                                        />
+                                    </View>
+                                </Card.Content>
+                            </Card>
+                        ))}
+
+                        <Button
+                            mode="contained"
+                            onPress={handleConfirmReview}
+                            style={styles.confirmButton}
+                            loading={isSaving}
+                            disabled={isSaving}
+                        >
+                            Confirm & Save Condition
+                        </Button>
+                    </KeyboardAvoidingView>
+                )}
+
                 {step === 'success' && (
                     <View style={styles.successContainer}>
                         <View style={[styles.successIcon, { backgroundColor: theme.colors.secondaryContainer }]}>
@@ -628,14 +915,18 @@ export default function UploadScreen() {
                                 ? 'Health Metrics saved!'
                                 : reviewMeds.length > 0
                                     ? 'Medications saved!'
-                                    : 'Document saved!'}
+                                    : (reviewBodyConditions?.length > 0 || reviewBodilyExcretions?.length > 0)
+                                        ? 'Body Conditions saved!'
+                                        : 'Document saved!'}
                         </Text>
                         <Button mode="contained" onPress={handleDone} style={styles.doneButton}>
                             {reviewMetrics.length > 0
                                 ? 'Go to Health Metrics'
                                 : reviewMeds.length > 0
                                     ? 'Go to Medications'
-                                    : 'Go to Documents'}
+                                    : (reviewBodyConditions?.length > 0 || reviewBodilyExcretions?.length > 0)
+                                        ? 'Go to Body Conditions'
+                                        : 'Go to Documents'}
                         </Button>
                         <Button mode="outlined" onPress={handleUploadAnother} style={{ marginTop: 12 }}>
                             Upload Another

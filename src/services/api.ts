@@ -65,9 +65,9 @@ export async function uploadDocument(
 }
 
 // Trigger document processing Edge Function
-export async function processDocument(documentId: string, storagePath: string) {
+export async function processDocument(documentId: string, storagePath: string, userDescription?: string) {
     const { data, error } = await supabase.functions.invoke('process-document', {
-        body: { documentId, storagePath },
+        body: { documentId, storagePath, userDescription },
     });
 
     if (error) throw error;

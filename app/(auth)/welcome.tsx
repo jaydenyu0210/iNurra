@@ -24,27 +24,7 @@ export default function WelcomeScreen() {
                     </Text>
                 </View>
 
-                {/* Features List */}
-                <View style={styles.features}>
-                    <FeatureItem
-                        emoji="📋"
-                        title="Understand Your Records"
-                        description="Upload prescriptions, test results, and doctor notes"
-                        theme={theme}
-                    />
-                    <FeatureItem
-                        emoji="💬"
-                        title="Ask Questions"
-                        description="Get personalized answers about your health"
-                        theme={theme}
-                    />
-                    <FeatureItem
-                        emoji="📅"
-                        title="Stay on Track"
-                        description="Never miss a medication or appointment"
-                        theme={theme}
-                    />
-                </View>
+
             </View>
 
             {/* CTA Button */}

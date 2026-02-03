@@ -13,6 +13,7 @@ export default function TabLayout() {
         }}>
             <Stack.Screen name="index" options={{ headerShown: false }} />
             <Stack.Screen name="medications" options={{ title: 'Medications' }} />
+            <Stack.Screen name="body-conditions" options={{ title: 'Body Conditions' }} />
             <Stack.Screen name="health" options={{ title: 'Health Metrics' }} />
             <Stack.Screen name="calendar" options={{ title: 'Calendar' }} />
             <Stack.Screen name="profile" options={{ title: 'Profile' }} />
