@@ -35,6 +35,11 @@ Analyze the image and select EVERY applicable label from this list:
 
 1. **prescription** - Medications, pharmacy labels, pill bottles, Rx papers, dosage instructions
    - Look for: Drug names, dosages, "take X times daily", Rx symbols, NDC numbers, pharmacy info
+   - **INFER INDICATION**: For each medication, you MUST infer the likely medical indication (what it treats) based on the drug name (e.g., "for high blood pressure", "for bacterial infection") if not explicitly stated.
+    - **MEDICAL KNOWLEDGE RETRIEVAL (MANDATORY)**: For each medication, you **MUST** use your internal medical knowledge to generate these fields. **DO NOT** leave them empty if the medication name is identified.
+      - **Precaution**: A concise 1-paragraph precaution (e.g., "Take with food", "Avoid sunlight").
+      - **Monitoring Recommendation**: A concise 1-paragraph recommendation (e.g., "Monitor blood pressure weekly").
+    - **SUMMARY**: Create a concise 1-sentence summary combining name, dosage, frequency, and indication (e.g., "Take 500mg Amoxicillin twice daily for 10 days for infection.").
 
 2. **health_metrics** - Health measurements and vital signs
    - Look for: Blood pressure readings (120/80), weight, glucose levels, heart rate, temperature, device displays
@@ -81,6 +86,9 @@ Return a JSON object with this EXACT structure:
     "startDate": "YYYY-MM-DD",  // Tomorrow's date
     "endDate": "YYYY-MM-DD|null",
     "instructions": "string|null",
+    "indication": "string|null",  // REQUIRED: Infer common usage (e.g. 'Treats high blood pressure'). Max 1 sentence.
+    "precaution": "string", // MANDATORY: Generate a concise 1-paragraph precaution based on medical knowledge. DO NOT leave empty.
+    "monitoring_recommendation": "string", // MANDATORY: Generate a concise 1-paragraph monitoring recommendation. DO NOT leave empty.
     "schedule": ["ISO8601 timestamps for each dose..."],  // Full schedule starting tomorrow
     "calendarEvents": [{
       "title": "Take [medication name]",
@@ -93,12 +101,17 @@ Return a JSON object with this EXACT structure:
   
   // If "health_metrics" or "test_result" label:
   "metrics": [{
-    "name": "string",  // Standardized: "Systolic Blood Pressure", "Weight", "Glucose", etc.
+    "name": "string",
     "value": "number",
     "unit": "string",
     "recordedAt": "ISO8601",
+    "summary": "string", // Brief context (e.g., "Elevated BP after running")
     "isAbnormal": "boolean|null",
-    "referenceRange": "string|null"
+    "referenceRange": "string|null",
+    "measurementPrecautions": "string", // REQUIRED: 1 paragraph precautions for this measurement based on general medical knowledge. DO NOT leave empty.
+    "monitoringGuidance": "string", // REQUIRED: 1 paragraph monitoring guidance. DO NOT leave empty.
+    "normalRangeLower": "number|null", // REQUIRED: Lower normal limit (infer from medical knowledge if not in doc).
+    "normalRangeUpper": "number|null" // REQUIRED: Upper normal limit (infer from medical knowledge if not in doc).
   }],
   
   // If "todo_activity" label:
@@ -108,6 +121,7 @@ Return a JSON object with this EXACT structure:
     "priority": "low|medium|high|urgent",
     "dueDate": "YYYY-MM-DD|null",
     "dueTime": "HH:MM|null",
+    "summary": "string", // Brief summary of the task
     "isRecurring": false,
     "recurrenceRule": "string|null",
     "calendarEvent": {
@@ -120,28 +134,29 @@ Return a JSON object with this EXACT structure:
   
   // If "body_condition" label:
   "bodyConditions": [{
-    "bodyLocation": "string",  // e.g., "left_forearm", "upper_back", "right_cheek"
-    "locationDescription": "string",  // Detailed: "inner left forearm, approximately 5cm from wrist"
-    "conditionType": "string",  // "rash", "wound", "bruise", "mole", "lesion", "burn", "bite", "swelling", "other"
+    "bodyLocation": "string",
+    "locationDescription": "string",
+    "conditionType": "string",
     "color": "string|null",
-    "texture": "string|null",  // "smooth", "rough", "scaly", "raised", "flat", "crusty"
-    "shape": "string|null",  // "circular", "oval", "irregular", "linear"
+    "texture": "string|null",
+    "shape": "string|null",
     "severity": "mild|moderate|severe|critical",
+    "summary": "string", // REQUIRED: Highly descriptive summary including size, color, shape, texture from visual + user desc.
     "dimensions": {
-      "widthMm": "number|null",  // Estimated in millimeters
+      "widthMm": "number|null",
       "heightMm": "number|null",
       "areaMm2": "number|null",
       "depthMm": "number|null",
-      "estimationMethod": "string"  // "visual_estimate", "reference_object", "ruler_in_image"
+      "estimationMethod": "string"
     },
     "rulerAnnotation": {
       "shouldAddRuler": true,
-      "suggestedScale": "string",  // e.g., "1cm grid", "5mm marks", "bounding_box"
+      "suggestedScale": "string",
       "boundingBox": {
-        "x": "number",  // Percentage from left (0-100)
-        "y": "number",  // Percentage from top (0-100)
-        "width": "number",  // Percentage of image width
-        "height": "number"  // Percentage of image height
+        "x": "number",
+        "y": "number",
+        "width": "number",
+        "height": "number"
       }
     },
     "notes": "string|null"
@@ -151,12 +166,13 @@ Return a JSON object with this EXACT structure:
   "bodilyExcretions": [{
     "excretionType": "stool|urine|vomit|blood|mucus|discharge|other",
     "color": "string|null",
-    "consistency": "string|null",  // "solid", "soft", "liquid", "watery", "mucousy"
+    "consistency": "string|null",
     "volumeMl": "number|null",
     "frequencyPerDay": "number|null",
     "bloodPresent": "boolean",
-    "painLevel": "number|null",  // 0-10 scale
-    "abnormalityIndicators": ["string"],  // ["foul_odor", "unusual_color", "blood_clots"]
+    "painLevel": "number|null",
+    "summary": "string", // Brief description of the excretion event
+    "abnormalityIndicators": ["string"],
     "observedAt": "ISO8601",
     "notes": "string|null"
   }],
@@ -169,7 +185,8 @@ Return a JSON object with this EXACT structure:
 
 ## CRITICAL RULES
 
-1. **MULTI-LABEL**: A single image can have MULTIPLE labels. A prescription with follow-up instructions has BOTH "prescription" AND "todo_activity".
+1. **USE USER DESCRIPTION**: The "USER DESCRIPTION" provided is CRITICAL context. Use it to populate summaries, clarify condition history, or identify objects.
+2. **GENERATE SUMMARIES**: Every item (medication, metric, condition, etc.) MUST have a \`summary\` field. This summary should combine the visual data with the user's verbal description.
 
 2. **BODY CONDITION DIMENSIONS**: 
    - ALWAYS try to estimate dimensions for body conditions

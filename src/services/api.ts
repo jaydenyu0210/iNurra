@@ -66,11 +66,30 @@ export async function uploadDocument(
 
 // Trigger document processing Edge Function
 export async function processDocument(documentId: string, storagePath: string, userDescription?: string) {
+    // Explicitly use Anon Key for authorization to avoid potential 401 issues with User JWTs
+    // The function uses Service Role internally so it doesn't depend on the user's RLS context
+    let headers = {};
+    if (supabase) {
+        // @ts-ignore
+        const anonKey = supabase.supabaseKey;
+        if (anonKey) {
+            headers = { Authorization: `Bearer ${anonKey}` };
+        }
+    }
+
     const { data, error } = await supabase.functions.invoke('process-document', {
         body: { documentId, storagePath, userDescription },
+        headers: headers,
     });
 
-    if (error) throw error;
+    if (error) {
+        console.error('Process Document Invocation Error:', error);
+        if ('context' in error) {
+            // @ts-ignore
+            console.error('Error Context:', JSON.stringify(error.context, null, 2));
+        }
+        throw error;
+    }
     return data;
 }
 
@@ -106,6 +125,68 @@ export async function transcribeAudio(base64Audio: string): Promise<{ text: stri
 
     if (error) throw error;
     return data;
+}
+
+// Generate speech from text (TTS)
+export async function generateSpeech(text: string): Promise<{ audioContent: string }> {
+    const { data, error } = await supabase.functions.invoke('tts', {
+        body: { text },
+    });
+
+    if (error) throw error;
+    if (data?.error) throw new Error(data.error);
+
+    return data;
+}
+
+// Detect body condition in image
+export async function detectBodyCondition(base64Image: string): Promise<boolean> {
+    try {
+        const { data, error } = await supabase.functions.invoke('chat', {
+            body: {
+                message: "Analyze this image. Does it contain a CLEARLY VISIBLE body condition, wound, rash, bruise, or injury that requires monitoring? Return strictly a JSON object: { \"detected\": true/false }. If the image is just a person, a face, objects, or healthy skin with no obvious issues, return false.",
+                image: base64Image,
+                jsonMode: true
+            },
+        });
+
+        if (error) {
+            console.error("Detection error:", error);
+            return false;
+        }
+
+        // Parse response if it's a string, or use directly if object
+        let result = data;
+        if (typeof data === 'string') {
+            try {
+                // Try to extract JSON from markdown block
+                const jsonMatch = data.match(/\{[\s\S]*\}/);
+                if (jsonMatch) {
+                    result = JSON.parse(jsonMatch[0]);
+                } else {
+                    result = JSON.parse(data);
+                }
+            } catch (e) {
+                console.log("Failed to parse detection response", data);
+                return false;
+            }
+        }
+
+        // Handle chat response structure
+        if (result.message && typeof result.message === 'string') {
+            try {
+                const jsonMatch = result.message.match(/\{[\s\S]*\}/);
+                if (jsonMatch) {
+                    return JSON.parse(jsonMatch[0]).detected === true;
+                }
+            } catch (e) { return false; }
+        }
+
+        return result.detected === true;
+    } catch (e) {
+        console.error("Detection exception:", e);
+        return false;
+    }
 }
 
 // Get user's documents
@@ -244,3 +325,5 @@ export async function deleteHealthMetric(metricId: string) {
 
     if (error) throw error;
 }
+
+

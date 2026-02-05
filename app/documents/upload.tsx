@@ -1,15 +1,16 @@
-import { useState, useCallback, useEffect } from 'react';
-import { View, StyleSheet, Image, ScrollView, Modal, KeyboardAvoidingView, Platform } from 'react-native';
-import { Text, Card, Button, useTheme, IconButton, ActivityIndicator, ProgressBar, RadioButton, TextInput, HelperText, Portal, Dialog } from 'react-native-paper';
+import { useState, useCallback, useEffect, useRef } from 'react';
+import { View, StyleSheet, Image, ScrollView, KeyboardAvoidingView, Platform } from 'react-native';
+import { Text, Card, Button, useTheme, IconButton, ActivityIndicator, ProgressBar, RadioButton, TextInput, HelperText, Portal, Dialog, Modal, Divider, Chip } from 'react-native-paper';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { useRouter, Stack } from 'expo-router';
 import { MaterialCommunityIcons } from '@expo/vector-icons';
 import * as ImagePicker from 'expo-image-picker';
 import { Audio } from 'expo-av';
-import * as FileSystem from 'expo-file-system';
+import * as FileSystem from 'expo-file-system/legacy';
 import { tokens } from '../../src/theme';
 import { supabase } from '../../src/services/supabase';
-import { getCurrentUser, transcribeAudio } from '../../src/services/api';
+import { getCurrentUser, transcribeAudio, generateSpeech } from '../../src/services/api';
+import CameraWithOverlay from '../../src/components/CameraWithOverlay';
 
 type DocumentType = 'prescription' | 'test_result' | 'discharge_summary' | 'doctor_notes' | 'health_metrics';
 
@@ -40,7 +41,10 @@ export default function UploadScreen() {
         extractedData?: any;
         medications?: any[]; // Allow for top-level medications
     } | null>(null);
-    const [step, setStep] = useState<'select' | 'describe' | 'uploading' | 'review' | 'success'>('select');
+    const [step, setStep] = useState<'select' | 'camera' | 'describe' | 'uploading' | 'summary' | 'review' | 'success'>('select');
+
+    // UI State for Modals
+    const [editingItem, setEditingItem] = useState<{ type: 'medication' | 'metric' | 'body_condition' | 'bodily_excretion' | 'todo', index: number } | null>(null);
 
     // Description State
     const [userDescription, setUserDescription] = useState('');
@@ -54,11 +58,19 @@ export default function UploadScreen() {
     // Metrics Review State
     const [reviewMetrics, setReviewMetrics] = useState<any[]>([]);
 
+    // Add missing states if they got lost, otherwise just add new ones
+    // Note: The previous view showed them missing in the snippet but they exist in the full file usually. 
+    // I'll be safe and add the new ones here.
+    const [selectedMetricIndex, setSelectedMetricIndex] = useState<number | null>(null); // For metric details modal
+    const [isSpeaking, setIsSpeaking] = useState(false); // TTS state
+
     // Body Conditions Review State
     const [reviewBodyConditions, setReviewBodyConditions] = useState<any[]>([]);
     const [reviewBodilyExcretions, setReviewBodilyExcretions] = useState<any[]>([]);
+    const [reviewTodos, setReviewTodos] = useState<any[]>([]);
 
     const [isSaving, setIsSaving] = useState(false);
+    const currentSoundRef = useRef<any>(null);
 
     // Auto-trigger upload when step changes to 'uploading'
     useEffect(() => {
@@ -72,16 +84,8 @@ export default function UploadScreen() {
             let result;
 
             if (source === 'camera') {
-                const permission = await ImagePicker.requestCameraPermissionsAsync();
-                if (!permission.granted) {
-                    alert('Camera permission is required to take photos');
-                    return;
-                }
-                result = await ImagePicker.launchCameraAsync({
-                    mediaTypes: ['images'],
-                    allowsEditing: true,
-                    quality: 0.8,
-                });
+                setStep('camera');
+                return;
             } else {
                 const permission = await ImagePicker.requestMediaLibraryPermissionsAsync();
                 if (!permission.granted) {
@@ -104,6 +108,65 @@ export default function UploadScreen() {
             alert('Failed to pick image');
         }
     }, []);
+
+    // TTS for metrics
+    const speakMetricDetails = async (metric: any) => {
+        if (isSpeaking) {
+            await stopSpeaking();
+            return;
+        }
+
+        try {
+            await stopSpeaking();
+            setIsSpeaking(true);
+
+            // Calculate status string
+            const rangeStatus = calculateRangeStatus(parseFloat(metric.value), metric.normalRangeLower, metric.normalRangeUpper);
+            let statusText = '';
+            if (rangeStatus === 'normal') statusText = 'is within normal range';
+            if (rangeStatus === 'high') statusText = 'is higher than normal';
+            if (rangeStatus === 'low') statusText = 'is lower than normal';
+
+            const textToSpeak = [
+                `Name: ${metric.name}`,
+                `Measured value: ${metric.value} ${metric.unit}`,
+                metric.measurementPrecautions ? `Measurement Precautions: ${metric.measurementPrecautions}` : '',
+                metric.monitoringGuidance ? `Monitoring Guidance: ${metric.monitoringGuidance}` : '',
+                (metric.normalRangeLower || metric.normalRangeUpper) ? `Normal Range: ${metric.normalRangeLower || '?'} to ${metric.normalRangeUpper || '?'}` : '',
+                statusText ? `Range Status: ${statusText}` : ''
+            ].filter(Boolean).join('. ');
+
+            const { audioContent } = await generateSpeech(textToSpeak);
+            const { sound } = await Audio.Sound.createAsync(
+                { uri: `data:audio/mp3;base64,${audioContent}` },
+                { shouldPlay: true }
+            );
+
+            currentSoundRef.current = sound;
+
+            sound.setOnPlaybackStatusUpdate((status) => {
+                if (status.isLoaded && status.didJustFinish) {
+                    currentSoundRef.current = null;
+                    setIsSpeaking(false);
+                    sound.unloadAsync();
+                }
+            });
+        } catch (error) {
+            console.error('TTS Error:', error);
+            setIsSpeaking(false);
+            alert('Failed to play audio');
+        }
+    };
+
+    const calculateRangeStatus = (value: number, lower: number | null, upper: number | null) => {
+        if (typeof value !== 'number' || isNaN(value)) return null;
+        if (lower === null && upper === null) return null;
+
+        if (lower !== null && value < lower) return 'low';
+        if (upper !== null && value > upper) return 'high';
+        if ((lower === null || value >= lower) && (upper === null || value <= upper)) return 'normal';
+        return null;
+    };
 
     // Audio Recording Functions
     async function startRecording() {
@@ -235,69 +298,111 @@ export default function UploadScreen() {
             console.log('extractedBodyConditions.length:', extractedBodyConditions.length);
             console.log('extractedBodilyExcretions.length:', extractedBodilyExcretions.length);
 
-            if (extractedMeds.length > 0 || docType === 'prescription') {
-                let medsToReview = [];
-
-                if (extractedMeds.length > 0) {
-                    // Populate from extracted data
-                    console.log('Mapping extracted medications to review form...');
-                    medsToReview = extractedMeds.map((m: any, i: number) => {
-                        console.log(`Med ${i}:`, JSON.stringify(m, null, 2));
-                        return {
-                            ...m,
-                            quantity: m.quantity ? String(m.quantity) : '',
-                            frequency: m.frequencyHours ? String(m.frequencyHours) : '',
-                            duration: m.durationDays ? String(m.durationDays) : '',
-                            schedule: m.schedule || null,
-                            endDate: m.endDate || null
-                        };
-                    });
-                    console.log('medsToReview:', JSON.stringify(medsToReview, null, 2));
-                } else {
-                    // Fallback: Add one empty medication slot for manual entry
-                    console.log('No meds extracted but identified as prescription. Adding manual entry.');
-                    medsToReview = [{
-                        name: '',
-                        dosage: '',
-                        frequency: '', // Represents hours between doses
-                        duration: '', // Days to take medication
-                        instructions: '',
-                        quantity: '',
-                        schedule: null,
-                        endDate: null
-                    }];
-                }
-
-                setReviewMeds(medsToReview);
-                setStep('review');
-            } else if (extractedMetrics.length > 0 || docType.includes('health') || docType.includes('test')) {
-                let metricsToReview = [];
-                if (extractedMetrics.length > 0) {
-                    metricsToReview = extractedMetrics.map((m: any) => ({
-                        ...m,
-                        value: m.value ? String(m.value) : '',
-                        recordedAt: m.recordedAt || new Date().toISOString()
-                    }));
-                } else {
-                    metricsToReview = [{ name: '', value: '', unit: '', recordedAt: new Date().toISOString() }];
-                }
-                setReviewMetrics(metricsToReview);
-                setStep('review');
-            } else if (extractedBodyConditions.length > 0 || contentLabels.includes('body_condition')) {
-                setReviewBodyConditions(extractedBodyConditions.map((c: any) => ({
-                    ...c,
-                    observedAt: c.observedAt || new Date().toISOString()
-                })));
-                setStep('review');
-            } else if (extractedBodilyExcretions.length > 0 || contentLabels.includes('bodily_excretion')) {
-                setReviewBodilyExcretions(extractedBodilyExcretions.map((e: any) => ({
-                    ...e,
-                    observedAt: e.observedAt || e.observed_at || new Date().toISOString()
-                })));
-                setStep('review');
-            } else {
-                setStep('success');
+            // Process ALL types simultaneously
+            const newReviewMeds = [];
+            if (extractedMeds.length > 0) {
+                const meds = extractedMeds.map((m: any) => ({
+                    ...m,
+                    quantity: m.quantity ? String(m.quantity) : '',
+                    frequency: m.frequencyHours ? String(m.frequencyHours) : '',
+                    duration: m.durationDays ? String(m.durationDays) : '',
+                    indication: m.indication || '',
+                    precaution: m.precaution || '',
+                    monitoringRecommendation: m.monitoring_recommendation || m.monitoringRecommendation || '',
+                    summary: m.summary || result.extractedData?.summary || result.summary || '',
+                    schedule: m.schedule || null,
+                    endDate: m.endDate || null
+                }));
+                newReviewMeds.push(...meds);
+            } else if (docType === 'prescription') {
+                // Fallback for empty prescription type
+                newReviewMeds.push({
+                    name: '',
+                    dosage: '',
+                    frequency: '',
+                    duration: '',
+                    instructions: '',
+                    quantity: '',
+                    indication: '',
+                    precaution: '',
+                    monitoringRecommendation: '',
+                    schedule: null,
+                    endDate: null
+                });
             }
+            setReviewMeds(newReviewMeds);
+
+            const newReviewMetrics = [];
+            if (extractedMetrics.length > 0) {
+                const metrics = extractedMetrics.map((m: any) => ({
+                    ...m,
+                    value: m.value ? String(m.value) : '',
+                    recordedAt: m.recordedAt || new Date().toISOString(),
+                    summary: m.summary || result.extractedData?.summary || result.summary || ''
+                }));
+                newReviewMetrics.push(...metrics);
+            } else if (docType.includes('health') || docType.includes('test')) {
+                newReviewMetrics.push({
+                    name: '',
+                    value: '',
+                    unit: '',
+                    recordedAt: new Date().toISOString(),
+                    summary: '',
+                    measurementPrecautions: '',
+                    monitoringGuidance: '',
+                    normalRangeLower: null,
+                    normalRangeUpper: null,
+                    rangeStatus: null
+                });
+            }
+            setReviewMetrics(newReviewMetrics);
+
+            const newReviewConditions = [];
+            if (extractedBodyConditions.length > 0) {
+                const conditions = extractedBodyConditions.map((c: any) => ({
+                    ...c,
+                    observedAt: c.observedAt || new Date().toISOString(),
+                    summary: c.summary || result.extractedData?.summary || result.summary || ''
+                }));
+                newReviewConditions.push(...conditions);
+            } else if (contentLabels.includes('body_condition') && docType === 'body_condition') { // Only add empty if explicitly classified as primary
+                newReviewConditions.push({
+                    bodyLocation: '',
+                    conditionType: '',
+                    summary: 'New Condition',
+                    observedAt: new Date().toISOString()
+                });
+            }
+            setReviewBodyConditions(newReviewConditions);
+
+            const newReviewExcretions = [];
+            if (extractedBodilyExcretions.length > 0) {
+                const excretions = extractedBodilyExcretions.map((e: any) => ({
+                    ...e,
+                    observedAt: e.observedAt || e.observed_at || new Date().toISOString(),
+                    summary: e.summary || result.extractedData?.summary || result.summary || ''
+                }));
+                newReviewExcretions.push(...excretions);
+            }
+            setReviewBodilyExcretions(newReviewExcretions);
+
+            // Extract Todos
+            const extractedTodos = result.extractedData?.todos || result.todos || [];
+            const newReviewTodos = [];
+            if (extractedTodos.length > 0) {
+                const todos = extractedTodos.map((t: any) => ({
+                    ...t,
+                    summary: t.summary || '',
+                    dueDate: t.dueDate || null,
+                    priority: t.priority || 'medium'
+                }));
+                newReviewTodos.push(...todos);
+            }
+            setReviewTodos(newReviewTodos);
+
+            // Transition to Summary step to show what was found
+            setStep('summary');
+
         } catch (error: any) {
             console.error('Upload error:', error);
             alert('Failed to upload document. Please try again.');
@@ -306,6 +411,7 @@ export default function UploadScreen() {
         }
     };
 
+    // Updated Helper Functions
     const handleUpdateMed = (index: number, field: string, value: string) => {
         const updatedMeds = [...reviewMeds];
         updatedMeds[index] = { ...updatedMeds[index], [field]: value };
@@ -326,6 +432,7 @@ export default function UploadScreen() {
             frequency: '',
             duration: '',
             quantity: '',
+            indication: '',
             schedule: null,
             endDate: null
         }]);
@@ -358,6 +465,27 @@ export default function UploadScreen() {
         const updated = [...reviewBodyConditions];
         updated[index] = { ...updated[index], [field]: value };
         setReviewBodyConditions(updated);
+    };
+
+    const handleUpdateTodo = (index: number, field: string, value: string) => {
+        const updated = [...reviewTodos];
+        updated[index] = { ...updated[index], [field]: value };
+        setReviewTodos(updated);
+    };
+
+    const handleAddTodo = () => {
+        setReviewTodos([...reviewTodos, {
+            title: '',
+            description: '',
+            priority: 'medium',
+            dueDate: null
+        }]);
+    };
+
+    const handleRemoveTodo = (index: number) => {
+        const updated = [...reviewTodos];
+        updated.splice(index, 1);
+        setReviewTodos(updated);
     };
 
     const handleConfirmReview = async () => {
@@ -396,6 +524,10 @@ export default function UploadScreen() {
                 end_date: med.endDate || null,
                 is_active: true,
                 start_date: tomorrowIsoDate, // Start Tomorrow per user request
+                indication: med.indication || null,
+                precaution: med.precaution || null,
+                monitoring_recommendation: med.monitoringRecommendation || null,
+                summary: med.summary || null, // Added summary field
             })) as any[];
 
             // Insert medications
@@ -415,6 +547,12 @@ export default function UploadScreen() {
                     value: parseFloat(m.value) || 0,
                     unit: m.unit,
                     recorded_at: m.recordedAt,
+                    summary: m.summary || null, // Save summary
+                    measurement_precautions: m.measurementPrecautions || null,
+                    monitoring_guidance: m.monitoringGuidance || null,
+                    normal_range_lower: m.normalRangeLower || null,
+                    normal_range_upper: m.normalRangeUpper || null,
+                    range_status: calculateRangeStatus(parseFloat(m.value), m.normalRangeLower, m.normalRangeUpper)
                 }));
                 const { error: metricError } = await supabase.from('health_metrics').insert(metricsToInsert as any);
                 if (metricError) throw metricError;
@@ -438,6 +576,7 @@ export default function UploadScreen() {
                     condition_type: c.conditionType || c.condition_type,
                     notes: c.notes,
                     observed_at: c.observedAt || c.observed_at || new Date().toISOString(),
+                    summary: c.summary || null, // Save summary
                 }));
                 const { error: conditionError } = await supabase.from('body_conditions').insert(conditionsToInsert as any);
                 if (conditionError) throw conditionError;
@@ -455,12 +594,29 @@ export default function UploadScreen() {
                     frequency_per_day: e.frequencyPerDay || e.frequency_per_day,
                     blood_present: e.bloodPresent || e.blood_present || false,
                     pain_level: e.painLevel || e.pain_level,
-                    abnormality_indicators: e.abnormalityIndicators || e.abnormality_indicators,
+                    abnormality_indicators: e.abnormalityIndicators || e.abnormality_indicators || [],
                     notes: e.notes,
                     observed_at: e.observedAt || e.observed_at || new Date().toISOString(),
+                    summary: e.summary || null, // Save summary
                 }));
                 const { error: excretionError } = await supabase.from('bodily_excretions').insert(excretionsToInsert as any);
                 if (excretionError) throw excretionError;
+            }
+
+            // Todos Insertion (as Calendar Events)
+            if (reviewTodos.length > 0) {
+                const todosToInsert = reviewTodos.map(t => ({
+                    user_id: userId,
+                    document_id: documentId,
+                    title: t.title || 'New Task',
+                    description: t.description || t.summary,
+                    type: 'todo',
+                    scheduled_at: t.dueDate ? new Date(t.dueDate).toISOString() : new Date().toISOString(),
+                    duration_minutes: 30,
+                    completed: false
+                }));
+                const { error: todoError } = await supabase.from('calendar_events').insert(todosToInsert as any);
+                if (todoError) throw todoError;
             }
 
             // Generate Calendar Schedule
@@ -561,25 +717,26 @@ export default function UploadScreen() {
 
             setStep('success');
         } catch (error) {
-            console.error('Error saving medications:', error);
-            alert('Failed to save medications: ' + (error as Error).message);
+            console.error('Error saving data:', error);
+            alert('Failed to save data: ' + (error as Error).message);
         } finally {
             setIsSaving(false);
         }
     };
 
     const handleDone = () => {
-        let target = '/documents/list'; // Default to documents list
-        if (reviewMetrics.length > 0) {
-            target = '/(tabs)/health';
-        } else if (reviewMeds.length > 0) {
-            target = '/(tabs)/medications';
-        } else if (reviewBodyConditions?.length > 0 || reviewBodilyExcretions?.length > 0) {
-            target = '/(tabs)/body-conditions';
-        }
+        // Since we support mixed uploads, default to documents list, but prioritize specific tabs if only 1 type
+        let target = '/documents/list';
 
-        // Dismiss all screens in upload flow, then replace with target
-        // This clears the stack and puts target on top of home without showing home
+        // Improve specific redirection
+        const hasMeds = reviewMeds.length > 0;
+        const hasMetrics = reviewMetrics.length > 0;
+        const hasConditions = reviewBodyConditions.length > 0 || reviewBodilyExcretions.length > 0;
+
+        if (hasMeds && !hasMetrics && !hasConditions) target = '/(tabs)/medications';
+        else if (hasMetrics && !hasMeds && !hasConditions) target = '/(tabs)/health';
+        else if (hasConditions && !hasMeds && !hasMetrics) target = '/(tabs)/body-conditions';
+
         router.dismissAll();
         router.replace(target as any);
     };
@@ -594,8 +751,72 @@ export default function UploadScreen() {
         setReviewMetrics([]);
         setReviewBodyConditions([]);
         setReviewBodilyExcretions([]);
+        setReviewTodos([]);
         setUploadedDocId(null); // Reset ID
     };
+
+    const stopSpeaking = async () => {
+        if (currentSoundRef.current) {
+            try {
+                await currentSoundRef.current.stopAsync();
+                await currentSoundRef.current.unloadAsync();
+            } catch (e) {
+                console.log('Error stopping sound:', e);
+            }
+            currentSoundRef.current = null;
+        }
+        setIsSpeaking(false);
+    };
+
+    const speakText = async (text: string) => {
+        if (!text) return;
+
+        // If already speaking, stop
+        if (isSpeaking) {
+            await stopSpeaking();
+            return;
+        }
+
+        try {
+            await stopSpeaking(); // Stop any existing audio
+            setIsSpeaking(true);
+
+            const { audioContent } = await generateSpeech(text);
+            const { sound } = await Audio.Sound.createAsync(
+                { uri: `data:audio/mp3;base64,${audioContent}` },
+                { shouldPlay: true }
+            );
+
+            currentSoundRef.current = sound;
+
+            // Clear state when playback finishes
+            sound.setOnPlaybackStatusUpdate((status) => {
+                if (status.isLoaded && status.didJustFinish) {
+                    currentSoundRef.current = null;
+                    setIsSpeaking(false);
+                    sound.unloadAsync();
+                }
+            });
+        } catch (error) {
+            console.error('TTS Error:', error);
+            setIsSpeaking(false);
+            alert('Failed to play audio');
+        }
+    };
+
+    if (step === 'camera') {
+        return (
+            <View style={{ flex: 1, backgroundColor: 'black' }}>
+                <CameraWithOverlay
+                    onCapture={(uri) => {
+                        setImage(uri);
+                        setStep('describe');
+                    }}
+                    onClose={() => setStep('select')}
+                />
+            </View>
+        );
+    }
 
     return (
         <SafeAreaView style={[styles.container, { backgroundColor: theme.colors.background }]}>
@@ -670,12 +891,13 @@ export default function UploadScreen() {
                         <View style={{ flexDirection: 'row', justifyContent: 'center', alignItems: 'center', marginVertical: 20, gap: 20 }}>
                             <Button
                                 mode={isRecording ? "contained" : "outlined"}
-                                onPress={isRecording ? stopRecording : startRecording}
+                                onPressIn={startRecording}
+                                onPressOut={stopRecording}
                                 icon={isRecording ? "stop" : "microphone"}
                                 buttonColor={isRecording ? theme.colors.error : undefined}
                                 disabled={isTranscribing}
                             >
-                                {isRecording ? "Stop Recording" : "Record Voice"}
+                                {isRecording ? "Release to Send" : "Hold to Record"}
                             </Button>
                             {isTranscribing && <ActivityIndicator size="small" />}
                         </View>
@@ -701,194 +923,198 @@ export default function UploadScreen() {
                     </View>
                 )}
 
-                {step === 'review' && reviewMeds.length > 0 && (
-                    <KeyboardAvoidingView behavior={Platform.OS === 'ios' ? 'padding' : 'height'}>
-                        <Text variant="bodyMedium" style={{ marginBottom: 16, textAlign: 'center', color: theme.colors.onSurfaceVariant }}>
-                            Review and edit detected medications.
+                {step === 'summary' && (
+                    <View style={styles.summaryContainer}>
+                        <View style={[styles.successIcon, { backgroundColor: theme.colors.primaryContainer }]}>
+                            <MaterialCommunityIcons name="clipboard-check" size={48} color={theme.colors.primary} />
+                        </View>
+                        <Text variant="headlineSmall" style={{ marginTop: tokens.spacing.lg, marginBottom: tokens.spacing.md }}>Analysis Complete</Text>
+                        <Text variant="bodyMedium" style={{ textAlign: 'center', marginBottom: tokens.spacing.xl, color: theme.colors.onSurfaceVariant }}>
+                            We found the following information in your document:
                         </Text>
 
-                        {/* List View of Editable Cards */}
-                        {reviewMeds.map((med, index) => (
-                            <Card key={index} style={styles.reviewCard}>
-
-                                <Card.Content>
-                                    <TextInput
-                                        label="Medication Name"
-                                        value={med.name}
-                                        onChangeText={(text) => handleUpdateMed(index, 'name', text)}
-                                        style={styles.input}
-                                        mode="outlined"
-                                    />
-                                    <TextInput
-                                        label="Quantity (total pills)"
-                                        value={med.quantity}
-                                        onChangeText={(text) => handleUpdateMed(index, 'quantity', text)}
-                                        style={styles.input}
-                                        mode="outlined"
-                                        keyboardType="numeric"
-                                    />
-                                    <TextInput
-                                        label="Frequency (Hours between doses)"
-                                        value={med.frequency}
-                                        onChangeText={(text) => handleUpdateMed(index, 'frequency', text)}
-                                        style={styles.input}
-                                        mode="outlined"
-                                        keyboardType="numeric"
-                                    // placeholder="e.g. 8"
-                                    />
-                                    <TextInput
-                                        label="Dosage"
-                                        value={med.dosage}
-                                        onChangeText={(text) => handleUpdateMed(index, 'dosage', text)}
-                                        style={styles.input}
-                                        mode="outlined"
-                                    />
-                                    <TextInput
-                                        label="Duration (days)"
-                                        value={med.duration}
-                                        onChangeText={(text) => handleUpdateMed(index, 'duration', text)}
-                                        style={styles.input}
-                                        mode="outlined"
-                                        keyboardType="numeric"
-                                    />
-                                </Card.Content>
-                            </Card>
-                        ))}
-
-
-
-                        <Button
-                            mode="contained"
-                            onPress={handleConfirmReview}
-                            style={styles.confirmButton}
-                            loading={isSaving}
-                            disabled={isSaving}
-                        >
-                            Confirm All & Save
-                        </Button>
-                    </KeyboardAvoidingView>
-                )}
-
-                {step === 'review' && reviewMetrics.length > 0 && (
-                    <KeyboardAvoidingView behavior={Platform.OS === 'ios' ? 'padding' : 'height'}>
-                        <Text variant="bodyMedium" style={{ marginBottom: 16, textAlign: 'center', color: theme.colors.onSurfaceVariant }}>
-                            Review and edit detected health metrics.
-                        </Text>
-
-                        {reviewMetrics.map((metric, index) => (
-                            <Card key={index} style={styles.reviewCard}>
-                                <Card.Title
-                                    title={`Metric ${index + 1}: ${metric.name || 'New'}`}
-                                />
-                                <Card.Content>
-                                    <TextInput
-                                        label="Name"
-                                        value={metric.name}
-                                        onChangeText={(text) => handleUpdateMetric(index, 'name', text)}
-                                        style={styles.input}
-                                        mode="outlined"
-                                    />
-                                    <TextInput
-                                        label="Value"
-                                        value={metric.value}
-                                        onChangeText={(text) => handleUpdateMetric(index, 'value', text)}
-                                        style={styles.input}
-                                        mode="outlined"
-                                        keyboardType="numeric"
-                                    />
-                                    <TextInput
-                                        label="Unit"
-                                        value={metric.unit}
-                                        onChangeText={(text) => handleUpdateMetric(index, 'unit', text)}
-                                        style={styles.input}
-                                        mode="outlined"
-                                    />
-                                    {/* Date input removed as per user request */}
-                                </Card.Content>
-                            </Card>
-                        ))}
-
-                        {/* 'Add Another Metric' button removed as per request for single-upload flow */}
-
-                        <Button
-                            mode="contained"
-                            onPress={handleConfirmReview}
-                            style={styles.confirmButton}
-                            loading={isSaving}
-                            disabled={isSaving}
-                        >
-                            Confirm & Save Metrics
-                        </Button>
-                    </KeyboardAvoidingView>
-                )}
-
-                {step === 'review' && reviewBodyConditions.length > 0 && (
-                    <KeyboardAvoidingView behavior={Platform.OS === 'ios' ? 'padding' : 'height'}>
-                        <Text variant="bodyMedium" style={{ marginBottom: 16, textAlign: 'center', color: theme.colors.onSurfaceVariant }}>
-                            Review detected body condition.
-                        </Text>
-
-                        {/* Show Image with Overlay */}
-                        {image && (
-                            <Image
-                                source={{ uri: image }}
-                                style={{ width: '100%', height: 250, borderRadius: 12, marginBottom: 16, resizeMode: 'contain', backgroundColor: '#000' }}
-                            />
-                        )}
-
-                        {/* Global Summary Display */}
-                        {processingResult?.summary && (
-                            <Card style={[styles.reviewCard, { backgroundColor: theme.colors.surfaceVariant }]}>
-                                <Card.Content>
-                                    <Text variant="labelMedium" style={{ color: theme.colors.onSurfaceVariant }}>AI Summary</Text>
-                                    <Text variant="bodyMedium" style={{ marginTop: 4 }}>{processingResult.summary}</Text>
-                                </Card.Content>
-                            </Card>
-                        )}
-
-                        {reviewBodyConditions.map((condition, index) => (
-                            <Card key={index} style={styles.reviewCard}>
-                                <Card.Title title="Condition Details" left={(props) => <MaterialCommunityIcons {...props} name="account-injury" />} />
-                                <Card.Content>
-                                    <TextInput
-                                        label="Location"
-                                        value={condition.bodyLocation}
-                                        onChangeText={(text) => handleUpdateBodyCondition(index, 'bodyLocation', text)}
-                                        style={styles.input}
-                                        mode="outlined"
-                                    />
-                                    <TextInput
-                                        label="Type"
-                                        value={condition.conditionType}
-                                        onChangeText={(text) => handleUpdateBodyCondition(index, 'conditionType', text)}
-                                        style={styles.input}
-                                        mode="outlined"
-                                    />
-                                    <TextInput
-                                        label="Notes / Description"
-                                        value={condition.notes || processingResult?.summary || ''}
-                                        onChangeText={(text) => handleUpdateBodyCondition(index, 'notes', text)}
-                                        style={[styles.input, { minHeight: 80 }]}
-                                        mode="outlined"
-                                        multiline
-                                    />
-                                    <View style={{ flexDirection: 'row', gap: 10 }}>
-                                        <TextInput
-                                            label="Severity"
-                                            value={condition.severity}
-                                            onChangeText={(text) => handleUpdateBodyCondition(index, 'severity', text)}
-                                            style={[styles.input, { flex: 1 }]}
-                                            mode="outlined"
-                                        />
-                                        <TextInput
-                                            label="Color"
-                                            value={condition.color}
-                                            onChangeText={(text) => handleUpdateBodyCondition(index, 'color', text)}
-                                            style={[styles.input, { flex: 1 }]}
-                                            mode="outlined"
-                                        />
+                        <View style={styles.summaryStats}>
+                            {reviewMeds.length > 0 && (
+                                <View style={styles.statRow}>
+                                    <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8 }}>
+                                        <MaterialCommunityIcons name="pill" size={20} color={theme.colors.primary} />
+                                        <Text variant="bodyLarge">Medications</Text>
                                     </View>
-                                </Card.Content>
+                                    <View style={[styles.badge, { backgroundColor: theme.colors.primaryContainer }]}>
+                                        <Text style={{ fontWeight: 'bold', color: theme.colors.primary }}>{reviewMeds.length}</Text>
+                                    </View>
+                                </View>
+                            )}
+                            {reviewMetrics.length > 0 && (
+                                <View style={styles.statRow}>
+                                    <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8 }}>
+                                        <MaterialCommunityIcons name="heart-pulse" size={20} color={theme.colors.primary} />
+                                        <Text variant="bodyLarge">Health Metrics</Text>
+                                    </View>
+                                    <View style={[styles.badge, { backgroundColor: theme.colors.primaryContainer }]}>
+                                        <Text style={{ fontWeight: 'bold', color: theme.colors.primary }}>{reviewMetrics.length}</Text>
+                                    </View>
+                                </View>
+                            )}
+                            {reviewBodyConditions.length > 0 && (
+                                <View style={styles.statRow}>
+                                    <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8 }}>
+                                        <MaterialCommunityIcons name="account-injury" size={20} color={theme.colors.primary} />
+                                        <Text variant="bodyLarge">Conditions</Text>
+                                    </View>
+                                    <View style={[styles.badge, { backgroundColor: theme.colors.primaryContainer }]}>
+                                        <Text style={{ fontWeight: 'bold', color: theme.colors.primary }}>{reviewBodyConditions.length}</Text>
+                                    </View>
+                                </View>
+                            )}
+                            {reviewBodilyExcretions.length > 0 && (
+                                <View style={styles.statRow}>
+                                    <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8 }}>
+                                        <MaterialCommunityIcons name="water" size={20} color={theme.colors.primary} />
+                                        <Text variant="bodyLarge">Excretions</Text>
+                                    </View>
+                                    <View style={[styles.badge, { backgroundColor: theme.colors.primaryContainer }]}>
+                                        <Text style={{ fontWeight: 'bold', color: theme.colors.primary }}>{reviewBodilyExcretions.length}</Text>
+                                    </View>
+                                </View>
+                            )}
+                            {reviewTodos.length > 0 && (
+                                <View style={styles.statRow}>
+                                    <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8 }}>
+                                        <MaterialCommunityIcons name="checkbox-marked-circle-outline" size={20} color={theme.colors.primary} />
+                                        <Text variant="bodyLarge">Tasks</Text>
+                                    </View>
+                                    <View style={[styles.badge, { backgroundColor: theme.colors.primaryContainer }]}>
+                                        <Text style={{ fontWeight: 'bold', color: theme.colors.primary }}>{reviewTodos.length}</Text>
+                                    </View>
+                                </View>
+                            )}
+                        </View>
+
+                        <Button mode="contained" onPress={() => setStep('review')} style={styles.doneButton}>
+                            Verify Details
+                        </Button>
+                    </View>
+                )}
+
+                {step === 'review' && (
+                    <View style={{ paddingBottom: 100 }}>
+
+
+
+
+                        {/* Medications Summary Cards */}
+                        {reviewMeds.map((med, index) => (
+                            <Card
+                                key={`med-${index}`}
+                                style={styles.reviewCard}
+                                onPress={() => setEditingItem({ type: 'medication', index })}
+                            >
+                                <Card.Title
+                                    title={med.name || 'Unknown Medication'}
+                                    subtitle={med.instructions || 'No instructions available'}
+                                    subtitleNumberOfLines={0}
+                                    left={(props) => <MaterialCommunityIcons {...props} name="pill" />}
+                                    right={(props) => (
+                                        <IconButton
+                                            {...props}
+                                            icon={isSpeaking ? 'stop' : 'volume-high'}
+                                            iconColor={isSpeaking ? theme.colors.error : undefined}
+                                            onPress={() => {
+                                                const textToSpeak = [
+                                                    med.name,
+                                                    med.indication ? `Indication: ${med.indication}` : '',
+                                                    med.instructions ? `Instructions: ${med.instructions}` : '',
+                                                    med.precaution ? `Precaution: ${med.precaution}` : '',
+                                                    med.monitoringRecommendation ? `Monitoring: ${med.monitoringRecommendation}` : ''
+                                                ].filter(Boolean).join('. ');
+                                                speakText(textToSpeak);
+                                            }}
+                                        />
+                                    )}
+                                />
+                            </Card>
+                        ))}
+
+                        {/* Metrics Summary Cards */}
+                        {reviewMetrics.map((metric, index) => {
+                            const rangeStatus = calculateRangeStatus(parseFloat(metric.value), metric.normalRangeLower, metric.normalRangeUpper);
+                            const statusColor = rangeStatus === 'normal' ? 'green' : (rangeStatus === 'high' || rangeStatus === 'low' ? 'orange' : theme.colors.primary);
+
+                            return (
+                                <Card
+                                    key={`metric-${index}`}
+                                    style={styles.reviewCard}
+                                    onPress={() => setSelectedMetricIndex(index)}
+                                >
+                                    <Card.Title
+                                        title={metric.name || 'New Metric'}
+                                        subtitle={`${metric.value} ${metric.unit}`}
+                                        left={(props) => <MaterialCommunityIcons {...props} name="heart-pulse" />}
+                                        right={(props) => (
+                                            <IconButton
+                                                {...props}
+                                                icon="volume-high"
+                                                onPress={() => speakMetricDetails(metric)}
+                                            />
+                                        )}
+                                    />
+                                    {rangeStatus && (
+                                        <Card.Content>
+                                            <Text style={{ color: statusColor, fontWeight: 'bold' }}>
+                                                {rangeStatus === 'normal' ? 'Within Normal Range' : (rangeStatus === 'high' ? 'Too High' : 'Too Low')}
+                                            </Text>
+                                        </Card.Content>
+                                    )}
+                                </Card>
+                            )
+                        })}
+
+                        {/* Conditions Summary Cards */}
+                        {reviewBodyConditions.map((condition, index) => (
+                            <Card
+                                key={`cond-${index}`}
+                                style={styles.reviewCard}
+                                onPress={() => setEditingItem({ type: 'body_condition', index })}
+                            >
+                                <Card.Title
+                                    title={condition.conditionType || 'Body Condition'}
+                                    subtitle={condition.bodyLocation}
+                                    left={(props) => <MaterialCommunityIcons {...props} name="account-injury" />}
+                                    right={(props) => <IconButton {...props} icon="pencil" />}
+                                />
+                            </Card>
+                        ))}
+
+                        {/* Excretions Summary Cards */}
+                        {reviewBodilyExcretions.map((excretion, index) => (
+                            <Card
+                                key={`excr-${index}`}
+                                style={styles.reviewCard}
+                                onPress={() => setEditingItem({ type: 'bodily_excretion', index })}
+                            >
+                                <Card.Title
+                                    title={excretion.excretionType || 'Bodily Excretion'}
+                                    subtitle={excretion.summary || 'Tap to edit details'}
+                                    left={(props) => <MaterialCommunityIcons {...props} name="water" />}
+                                    right={(props) => <IconButton {...props} icon="pencil" />}
+                                />
+                            </Card>
+                        ))}
+
+                        {/* Todos Summary Cards */}
+                        {reviewTodos.map((todo, index) => (
+                            <Card
+                                key={`todo-${index}`}
+                                style={styles.reviewCard}
+                                onPress={() => setEditingItem({ type: 'todo', index })}
+                            >
+                                <Card.Title
+                                    title={todo.title || 'Task'}
+                                    subtitle={todo.dueDate ? `Due: ${new Date(todo.dueDate).toLocaleDateString()}` : 'No Due Date'}
+                                    left={(props) => <MaterialCommunityIcons {...props} name="checkbox-marked-circle-outline" />}
+                                    right={(props) => <IconButton {...props} icon="pencil" />}
+                                />
                             </Card>
                         ))}
 
@@ -899,9 +1125,9 @@ export default function UploadScreen() {
                             loading={isSaving}
                             disabled={isSaving}
                         >
-                            Confirm & Save Condition
+                            Confirm all and Save
                         </Button>
-                    </KeyboardAvoidingView>
+                    </View>
                 )}
 
                 {step === 'success' && (
@@ -911,22 +1137,10 @@ export default function UploadScreen() {
                         </View>
                         <Text variant="headlineSmall" style={{ marginTop: tokens.spacing.lg }}>Success!</Text>
                         <Text variant="bodyMedium" style={{ textAlign: 'center', marginVertical: tokens.spacing.md }}>
-                            {reviewMetrics.length > 0
-                                ? 'Health Metrics saved!'
-                                : reviewMeds.length > 0
-                                    ? 'Medications saved!'
-                                    : (reviewBodyConditions?.length > 0 || reviewBodilyExcretions?.length > 0)
-                                        ? 'Body Conditions saved!'
-                                        : 'Document saved!'}
+                            All items have been verified and saved to your health record.
                         </Text>
                         <Button mode="contained" onPress={handleDone} style={styles.doneButton}>
-                            {reviewMetrics.length > 0
-                                ? 'Go to Health Metrics'
-                                : reviewMeds.length > 0
-                                    ? 'Go to Medications'
-                                    : (reviewBodyConditions?.length > 0 || reviewBodilyExcretions?.length > 0)
-                                        ? 'Go to Body Conditions'
-                                        : 'Go to Documents'}
+                            Done
                         </Button>
                         <Button mode="outlined" onPress={handleUploadAnother} style={{ marginTop: 12 }}>
                             Upload Another
@@ -934,9 +1148,286 @@ export default function UploadScreen() {
                     </View>
                 )}
             </ScrollView>
+
+            {/* Edit Modals */}
+            <Portal>
+                {/* Medication Modal */}
+                <Dialog visible={editingItem?.type === 'medication'} onDismiss={() => setEditingItem(null)} style={{ width: '90%', alignSelf: 'center', borderRadius: 8 }}>
+                    <View style={{ flexDirection: 'row', justifyContent: 'flex-end', position: 'absolute', right: 0, top: 0, zIndex: 1 }}>
+                        <IconButton icon="close" size={20} onPress={() => setEditingItem(null)} />
+                    </View>
+                    <Dialog.Title style={{ paddingRight: 40 }}>
+                        {editingItem?.type === 'medication' ? reviewMeds[editingItem.index]?.name || 'Medication' : 'Medication'}
+                    </Dialog.Title>
+                    <Dialog.ScrollArea style={{ maxHeight: 630, paddingHorizontal: 0 }}>
+                        <ScrollView contentContainerStyle={{ paddingHorizontal: 24, paddingTop: 16, paddingBottom: 16 }}>
+                            {editingItem?.type === 'medication' && (
+                                <View>
+                                    <Text variant="labelLarge" style={{ color: theme.colors.primary, marginBottom: 4 }}>Indication</Text>
+                                    {(() => {
+                                        const text = reviewMeds[editingItem.index]?.indication || 'Not available';
+                                        const sentences = text.split(/(?<=[.!?])\s+/).filter(Boolean);
+                                        if (sentences.length <= 1) {
+                                            return <Text variant="bodyMedium" style={{ marginBottom: 16 }}>{text}</Text>;
+                                        }
+                                        return (
+                                            <View style={{ marginBottom: 16 }}>
+                                                {sentences.map((s: string, i: number) => (
+                                                    <Text key={i} variant="bodyMedium" style={{ marginBottom: 2 }}>• {s.trim()}</Text>
+                                                ))}
+                                            </View>
+                                        );
+                                    })()}
+
+                                    <Text variant="labelLarge" style={{ color: theme.colors.primary, marginBottom: 4 }}>Precaution</Text>
+                                    {(() => {
+                                        const text = reviewMeds[editingItem.index]?.precaution || 'Not available';
+                                        const sentences = text.split(/(?<=[.!?])\s+/).filter(Boolean);
+                                        if (sentences.length <= 1) {
+                                            return <Text variant="bodyMedium" style={{ marginBottom: 16 }}>{text}</Text>;
+                                        }
+                                        return (
+                                            <View style={{ marginBottom: 16 }}>
+                                                {sentences.map((s: string, i: number) => (
+                                                    <Text key={i} variant="bodyMedium" style={{ marginBottom: 2 }}>• {s.trim()}</Text>
+                                                ))}
+                                            </View>
+                                        );
+                                    })()}
+
+                                    <Text variant="labelLarge" style={{ color: theme.colors.primary, marginBottom: 4 }}>Monitoring</Text>
+                                    {(() => {
+                                        const text = reviewMeds[editingItem.index]?.monitoringRecommendation || 'Not available';
+                                        const sentences = text.split(/(?<=[.!?])\s+/).filter(Boolean);
+                                        if (sentences.length <= 1) {
+                                            return <Text variant="bodyMedium">{text}</Text>;
+                                        }
+                                        return (
+                                            <View>
+                                                {sentences.map((s: string, i: number) => (
+                                                    <Text key={i} variant="bodyMedium" style={{ marginBottom: 2 }}>• {s.trim()}</Text>
+                                                ))}
+                                            </View>
+                                        );
+                                    })()}
+                                </View>
+                            )}
+                        </ScrollView>
+                    </Dialog.ScrollArea>
+                </Dialog>
+
+                {/* Metric Modal */}
+                <Dialog visible={editingItem?.type === 'metric'} onDismiss={() => setEditingItem(null)}>
+                    <Dialog.Title>Edit Metric</Dialog.Title>
+                    <Dialog.Content>
+                        {editingItem?.type === 'metric' && (
+                            <>
+                                <TextInput
+                                    label="Name"
+                                    value={reviewMetrics[editingItem.index]?.name}
+                                    onChangeText={(t) => handleUpdateMetric(editingItem.index, 'name', t)}
+                                    style={styles.input} mode="outlined"
+                                />
+                                <TextInput
+                                    label="Value"
+                                    value={reviewMetrics[editingItem.index]?.value}
+                                    onChangeText={(t) => handleUpdateMetric(editingItem.index, 'value', t)}
+                                    style={styles.input} mode="outlined" keyboardType="numeric"
+                                />
+                                <TextInput
+                                    label="Unit"
+                                    value={reviewMetrics[editingItem.index]?.unit}
+                                    onChangeText={(t) => handleUpdateMetric(editingItem.index, 'unit', t)}
+                                    style={styles.input} mode="outlined"
+                                />
+                            </>
+                        )}
+                    </Dialog.Content>
+                    <Dialog.Actions>
+                        <Button onPress={() => {
+                            if (editingItem && editingItem.type === 'metric') {
+                                handleRemoveMetric(editingItem.index);
+                                setEditingItem(null);
+                            }
+                        }} textColor={theme.colors.error}>Remove</Button>
+                        <Button onPress={() => setEditingItem(null)}>Done</Button>
+                    </Dialog.Actions>
+                </Dialog>
+
+                {/* Condition Modal */}
+                <Dialog visible={editingItem?.type === 'body_condition'} onDismiss={() => setEditingItem(null)}>
+                    <Dialog.Title>Edit Condition</Dialog.Title>
+                    <Dialog.Content>
+                        {editingItem?.type === 'body_condition' && (
+                            <ScrollView>
+                                <TextInput
+                                    label="Type"
+                                    value={reviewBodyConditions[editingItem.index]?.conditionType}
+                                    onChangeText={(t) => handleUpdateBodyCondition(editingItem.index, 'conditionType', t)}
+                                    style={styles.input} mode="outlined"
+                                />
+                                <TextInput
+                                    label="Location"
+                                    value={reviewBodyConditions[editingItem.index]?.bodyLocation}
+                                    onChangeText={(t) => handleUpdateBodyCondition(editingItem.index, 'bodyLocation', t)}
+                                    style={styles.input} mode="outlined"
+                                />
+                                <TextInput
+                                    label="Notes"
+                                    value={reviewBodyConditions[editingItem.index]?.notes}
+                                    onChangeText={(t) => handleUpdateBodyCondition(editingItem.index, 'notes', t)}
+                                    style={styles.input} mode="outlined" multiline
+                                />
+                            </ScrollView>
+                        )}
+                    </Dialog.Content>
+                    <Dialog.Actions>
+                        <Button onPress={() => setEditingItem(null)}>Done</Button>
+                    </Dialog.Actions>
+                </Dialog>
+
+                {/* Todo Modal */}
+                <Dialog visible={editingItem?.type === 'todo'} onDismiss={() => setEditingItem(null)}>
+                    <Dialog.Title>Edit Task</Dialog.Title>
+                    <Dialog.Content>
+                        {editingItem?.type === 'todo' && (
+                            <>
+                                <TextInput
+                                    label="Title"
+                                    value={reviewTodos[editingItem.index]?.title}
+                                    onChangeText={(t) => handleUpdateTodo(editingItem.index, 'title', t)}
+                                    style={styles.input} mode="outlined"
+                                />
+                                <TextInput
+                                    label="Description"
+                                    value={reviewTodos[editingItem.index]?.description}
+                                    onChangeText={(t) => handleUpdateTodo(editingItem.index, 'description', t)}
+                                    style={styles.input} mode="outlined" multiline
+                                />
+                            </>
+                        )}
+                    </Dialog.Content>
+                    <Dialog.Actions>
+                        <Button onPress={() => {
+                            if (editingItem && editingItem.type === 'todo') {
+                                handleRemoveTodo(editingItem.index);
+                                setEditingItem(null);
+                            }
+                        }} textColor={theme.colors.error}>Remove</Button>
+                        <Button onPress={() => setEditingItem(null)}>Done</Button>
+                    </Dialog.Actions>
+                </Dialog>
+                {/* Metric Details Modal */}
+                <Modal
+                    visible={selectedMetricIndex !== null}
+                    onDismiss={() => setSelectedMetricIndex(null)}
+                    contentContainerStyle={{ backgroundColor: 'white', padding: 20, margin: 20, borderRadius: 8 }}
+                >
+                    <ScrollView>
+                        {selectedMetricIndex !== null && reviewMetrics[selectedMetricIndex] && (() => {
+                            const metric = reviewMetrics[selectedMetricIndex];
+                            const rangeStatus = calculateRangeStatus(parseFloat(metric.value), metric.normalRangeLower, metric.normalRangeUpper);
+                            const statusColor = rangeStatus === 'normal' ? 'green' : (rangeStatus === 'high' || rangeStatus === 'low' ? 'orange' : theme.colors.primary);
+
+                            return (
+                                <View>
+                                    <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 10 }}>
+                                        <Text variant="headlineSmall" style={{ flex: 1 }}>{metric.name}</Text>
+                                        <IconButton
+                                            icon={isSpeaking ? 'stop' : 'volume-high'}
+                                            mode="contained"
+                                            onPress={() => speakMetricDetails(metric)}
+                                        />
+                                    </View>
+
+                                    <Divider style={{ marginVertical: 10 }} />
+
+                                    <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 20 }}>
+                                        <View>
+                                            <Text variant="labelMedium" style={{ color: theme.colors.outline }}>Value</Text>
+                                            <Text variant="headlineMedium" style={{ fontWeight: 'bold', color: theme.colors.primary }}>
+                                                {metric.value} <Text variant="titleMedium">{metric.unit}</Text>
+                                            </Text>
+                                        </View>
+
+                                        {rangeStatus && (
+                                            <View>
+                                                <Text variant="labelMedium" style={{ color: theme.colors.outline, marginBottom: 4 }}>Range Status</Text>
+                                                <Chip style={{ backgroundColor: statusColor + '20' }}>
+                                                    <Text style={{ color: statusColor, fontWeight: 'bold' }}>
+                                                        {rangeStatus === 'normal' ? 'Within Normal Range' : (rangeStatus === 'high' ? 'Too High' : 'Too Low')}
+                                                    </Text>
+                                                </Chip>
+                                            </View>
+                                        )}
+                                    </View>
+
+                                    {(metric.normalRangeLower || metric.normalRangeUpper) && (
+                                        <View style={{ marginBottom: 15 }}>
+                                            <Text variant="titleMedium" style={{ fontWeight: 'bold', marginBottom: 5 }}>Normal Range</Text>
+                                            <Text variant="bodyLarge">
+                                                {metric.normalRangeLower || '?'} - {metric.normalRangeUpper || '?'} {metric.unit}
+                                            </Text>
+                                        </View>
+                                    )}
+
+                                    {metric.measurementPrecautions && (
+                                        <View style={{ marginBottom: 15, backgroundColor: theme.colors.secondaryContainer, padding: 15, borderRadius: 8 }}>
+                                            <View style={{ flexDirection: 'row', alignItems: 'center', marginBottom: 5 }}>
+                                                <MaterialCommunityIcons name="alert-circle-outline" size={20} color={theme.colors.onSecondaryContainer} />
+                                                <Text variant="titleMedium" style={{ fontWeight: 'bold', marginLeft: 8, color: theme.colors.onSecondaryContainer }}>Precautions</Text>
+                                            </View>
+                                            <Text variant="bodyMedium" style={{ color: theme.colors.onSecondaryContainer }}>
+                                                {formatSentences(metric.measurementPrecautions)}
+                                            </Text>
+                                        </View>
+                                    )}
+
+                                    {metric.monitoringGuidance && (
+                                        <View style={{ marginBottom: 15, backgroundColor: theme.colors.tertiaryContainer, padding: 15, borderRadius: 8 }}>
+                                            <View style={{ flexDirection: 'row', alignItems: 'center', marginBottom: 5 }}>
+                                                <MaterialCommunityIcons name="clipboard-pulse-outline" size={20} color={theme.colors.onTertiaryContainer} />
+                                                <Text variant="titleMedium" style={{ fontWeight: 'bold', marginLeft: 8, color: theme.colors.onTertiaryContainer }}>Monitoring Guidance</Text>
+                                            </View>
+                                            <Text variant="bodyMedium" style={{ color: theme.colors.onTertiaryContainer }}>
+                                                {formatSentences(metric.monitoringGuidance)}
+                                            </Text>
+                                        </View>
+                                    )}
+
+                                    <Button mode="contained" onPress={() => setSelectedMetricIndex(null)} style={{ marginTop: 10 }}>
+                                        Close
+                                    </Button>
+                                </View>
+                            );
+                        })()}
+                    </ScrollView>
+                </Modal>
+            </Portal>
         </SafeAreaView>
     );
 }
+
+
+
+const formatSentences = (text: string) => {
+    if (!text) return null;
+    // Split by period followed by space, or newline
+    const sentences = text.match(/[^.!?]+[.!?]+/g) || [text];
+
+    if (sentences.length <= 1) return <Text>{text}</Text>;
+
+    return (
+        <View>
+            {sentences.map((s, i) => (
+                <View key={i} style={{ flexDirection: 'row', marginBottom: 4, alignItems: 'flex-start' }}>
+                    <Text style={{ marginRight: 6 }}>{'\u2022'}</Text>
+                    <Text style={{ flex: 1 }}>{s.trim()}</Text>
+                </View>
+            ))}
+        </View>
+    );
+};
 
 const styles = StyleSheet.create({
     container: { flex: 1 },
@@ -950,10 +1441,20 @@ const styles = StyleSheet.create({
     uploadIcon: { width: 64, height: 64, borderRadius: tokens.radius.lg, alignItems: 'center', justifyContent: 'center', marginBottom: tokens.spacing.sm },
     uploadingContainer: { alignItems: 'center', paddingVertical: tokens.spacing.xxl },
     progressBar: { width: '100%', height: 8, borderRadius: 4, marginTop: tokens.spacing.md },
-    reviewCard: { marginBottom: tokens.spacing.lg },
+    reviewCard: { marginBottom: tokens.spacing.sm },
     input: { marginBottom: tokens.spacing.md },
     confirmButton: { marginTop: tokens.spacing.md, padding: 4 },
     successContainer: { alignItems: 'center', paddingVertical: tokens.spacing.lg },
     successIcon: { width: 96, height: 96, borderRadius: 48, alignItems: 'center', justifyContent: 'center' },
     doneButton: { width: '100%', borderRadius: tokens.radius.xl },
+
+    // Summary Steps
+    summaryContainer: { alignItems: 'center', paddingVertical: tokens.spacing.lg },
+    summaryStats: { width: '100%', marginVertical: tokens.spacing.lg, gap: 12 },
+    statRow: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', padding: 16, backgroundColor: '#f5f5f5', borderRadius: 12 },
+    badge: { paddingHorizontal: 12, paddingVertical: 4, borderRadius: 16 },
+
+    // Insights
+    sectionHeader: { flexDirection: 'row', alignItems: 'center', gap: 8, marginTop: 12, marginBottom: 8 },
+    insightRow: { flexDirection: 'row', alignItems: 'flex-start', gap: 4 },
 });
