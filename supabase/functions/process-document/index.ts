@@ -71,6 +71,7 @@ Return a JSON object with this EXACT structure:
 {
   "contentLabels": ["label1", "label2", ...],  // Array of ALL applicable labels
   "primaryType": "string",  // The MOST relevant single type for backward compatibility
+  "isPureItem": boolean, // TRUE if this is a direct photo of an item/condition (e.g. pill bottle, thermometer, skin rash) and NOT a document/paper/report.
   "title": "string",  // Short descriptive title with date if found
   "summary": "string",  // Clear, simple summary of what's in the document/image
   
@@ -108,7 +109,7 @@ Return a JSON object with this EXACT structure:
     "summary": "string", // Brief context (e.g., "Elevated BP after running")
     "isAbnormal": "boolean|null",
     "referenceRange": "string|null",
-    "measurementPrecautions": "string", // REQUIRED: 1 paragraph precautions for this measurement based on general medical knowledge. DO NOT leave empty.
+    "measurementPrecautions": "string", // REQUIRED: 1 paragraph precautions for this measurement based on medical knowledge. DO NOT leave empty.
     "monitoringGuidance": "string", // REQUIRED: 1 paragraph monitoring guidance. DO NOT leave empty.
     "normalRangeLower": "number|null", // REQUIRED: Lower normal limit (infer from medical knowledge if not in doc).
     "normalRangeUpper": "number|null" // REQUIRED: Upper normal limit (infer from medical knowledge if not in doc).
@@ -185,8 +186,6 @@ Return a JSON object with this EXACT structure:
 
 ## CRITICAL RULES
 
-1. **USE USER DESCRIPTION**: The "USER DESCRIPTION" provided is CRITICAL context. Use it to populate summaries, clarify condition history, or identify objects.
-2. **GENERATE SUMMARIES**: Every item (medication, metric, condition, etc.) MUST have a \`summary\` field. This summary should combine the visual data with the user's verbal description.
 
 2. **BODY CONDITION DIMENSIONS**: 
    - ALWAYS try to estimate dimensions for body conditions
@@ -373,61 +372,7 @@ Analyze the image above along with any extracted text and user description to pr
             extractedData.contentLabels = extractedData.primaryType ? [extractedData.primaryType] : ['other'];
         }
 
-        // Step 3.5: Post-Classification Annotation
-        // Check if classification identified a body condition and requested a ruler
-        const rulerAnnotation = extractedData.bodyConditions?.[0]?.rulerAnnotation;
-        if (rulerAnnotation && rulerAnnotation.boundingBox) {
-            console.log("Body condition identified in classification. Drawing overlay...");
-            try {
-                const box = rulerAnnotation.boundingBox;
-
-                // Decode image from original download
-                const image = await Image.decode(uint8Array);
-
-                // Convert % to pixels and round to integers
-                const x = Math.round((box.x / 100) * image.width);
-                const y = Math.round((box.y / 100) * image.height);
-                const w = Math.round((box.width / 100) * image.width);
-                const h = Math.round((box.height / 100) * image.height);
-
-                console.log(`Drawing box at x=${x}, y=${y}, w=${w}, h=${h}`);
-
-                // Draw Red Bounding Box (Thicker for visibility)
-                const thickness = 5;
-                image.drawBox(x, y, w, thickness, 0xFF0000FF); // Top
-                image.drawBox(x, y + h, w, thickness, 0xFF0000FF); // Bottom
-                image.drawBox(x, y, thickness, h, 0xFF0000FF); // Left
-                image.drawBox(x + w, y, thickness, h, 0xFF0000FF); // Right
-
-                // Draw "Ruler" Ticks
-                for (let i = 0; i <= 10; i++) {
-                    const tickX = x + (w * (i / 10));
-                    image.drawBox(Math.round(tickX), y + h, 3, 15, 0xFF0000FF);
-                }
-
-                // Encode back
-                const processedBuffer = await image.encode();
-
-                // Overwrite in storage
-                console.log('Overwriting original image with annotated version...');
-                const { data: uploadData, error: uploadError } = await supabase.storage
-                    .from('documents')
-                    .upload(storagePath, processedBuffer, {
-                        contentType: mimeType,
-                        upsert: true
-                    });
-
-                if (uploadError) {
-                    console.error('FAILED to overwrite image in storage:', uploadError);
-                } else {
-                    console.log('Successfully overwrote image:', uploadData);
-                }
-            } catch (annoError) {
-                console.error("Annotation logic crashed:", annoError);
-            }
-        } else {
-            console.log("No body conditions with ruler request found. Skipping annotation.");
-        }
+        // Step 3.5: Post-Classification Annotation logic removed per user request.
 
         // Step 4: Generate embedding for RAG
         console.log('[Step 6] Generating embedding...');
@@ -440,24 +385,129 @@ Analyze the image above along with any extracted text and user description to pr
         const embedding = textForEmbedding ? await generateEmbedding(textForEmbedding) : [];
 
         // Step 5: Update document in database with extracted data
-        console.log('[Step 7] Saving extracted data...');
-        const { error: updateError } = await supabase
-            .from('documents')
-            .update({
-                raw_text: extractedText || null,
-                summary: extractedData.summary,
-                title: extractedData.title,
-                type: extractedData.primaryType || 'other',
-                content_labels: extractedData.contentLabels,
-                extracted_data: extractedData,
-                embedding: embedding.length > 0 ? embedding : null,
-                processing_status: 'completed',
-                updated_at: new Date().toISOString(),
-            })
-            .eq('id', documentId);
+        // Step 5: Save data (Conditional based on isPureItem)
+        console.log(`[Step 7] Saving extracted data... isPureItem=${extractedData.isPureItem}`);
 
-        if (updateError) {
-            throw new Error(`Failed to update document: ${updateError.message}`);
+        if (extractedData.isPureItem) {
+            // PURE ITEM Logic: Insert directly into tables and DELETE document row
+            console.log('Processing as PURE ITEM (bypassing documents table)');
+
+            // 1. Insert Medications
+            if (extractedData.medications && extractedData.medications.length > 0) {
+                console.log(`Inserting ${extractedData.medications.length} medications...`);
+                // Get user_id from the document record before we delete it (or assume we have it in request context? No, we need to fetch it or use the one from document)
+                // We have the documentId, let's fetch user_id first if we don't have it.
+                // Actually, we can just fetch the document first to get the user_id? 
+                // Wait, 'documents' row exists. Let's get user_id from it.
+                const { data: docData, error: docError } = await supabase
+                    .from('documents')
+                    .select('user_id')
+                    .eq('id', documentId)
+                    .single();
+
+                if (docData?.user_id) {
+                    const medsToInsert = extractedData.medications.map((med: any) => ({
+                        user_id: docData.user_id,
+                        document_id: null, // Pure item, no document link
+                        name: med.name,
+                        dosage: med.dosage,
+                        frequency: med.frequency, // Note: Schema might use different field, check extractedData structure vs DB
+                        instructions: med.instructions,
+                        start_date: med.startDate,
+                        end_date: med.endDate,
+                        is_active: true,
+                        quantity: med.quantity,
+                        duration_days: med.durationDays,
+                        schedule: med.calendarEvents // Storing events as JSON schedule for now
+                    }));
+                    const { error: medError } = await supabase.from('medications').insert(medsToInsert);
+                    if (medError) console.error('Error inserting pure medications:', medError);
+                }
+            }
+
+            // 2. Insert Health Metrics
+            if (extractedData.metrics && extractedData.metrics.length > 0) {
+                console.log(`Inserting ${extractedData.metrics.length} metrics...`);
+                const { data: docData } = await supabase
+                    .from('documents')
+                    .select('user_id')
+                    .eq('id', documentId)
+                    .single();
+
+                if (docData?.user_id) {
+                    const metricsToInsert = extractedData.metrics.map((metric: any) => ({
+                        user_id: docData.user_id,
+                        source_document_id: null,
+                        metric_type: metric.name, // Mapping name to type
+                        value: metric.value,
+                        unit: metric.unit,
+                        recorded_at: metric.recordedAt || new Date().toISOString(),
+                        notes: metric.summary
+                    }));
+                    const { error: metricError } = await supabase.from('health_metrics').insert(metricsToInsert);
+                    if (metricError) console.error('Error inserting pure metrics:', metricError);
+                }
+            }
+
+            // 3. Insert Body Conditions
+            if (extractedData.bodyConditions && extractedData.bodyConditions.length > 0) {
+                console.log(`Inserting ${extractedData.bodyConditions.length} body conditions...`);
+                const { data: docData } = await supabase
+                    .from('documents')
+                    .select('user_id')
+                    .eq('id', documentId)
+                    .single();
+
+                if (docData?.user_id) {
+                    const conditionsToInsert = extractedData.bodyConditions.map((cond: any) => ({
+                        user_id: docData.user_id,
+                        document_id: null,
+                        body_location: cond.bodyLocation,
+                        location_description: cond.locationDescription,
+                        condition_type: cond.conditionType,
+                        severity: cond.severity,
+                        notes: cond.summary,
+                        observed_at: new Date().toISOString(),
+                        annotated_image_path: storagePath // Link the image directly!
+                    }));
+                    const { error: condError } = await supabase.from('body_conditions').insert(conditionsToInsert);
+                    if (condError) console.error('Error inserting pure body conditions:', condError);
+                }
+            }
+
+            // 4. DELETE the document row
+            console.log(`Deleting temporary document row ${documentId}...`);
+            const { error: deleteError } = await supabase
+                .from('documents')
+                .delete()
+                .eq('id', documentId);
+
+            if (deleteError) {
+                console.error('Failed to delete pure item document row:', deleteError);
+                // Non-critical (?) but good to know
+            }
+
+        } else {
+            // DOCUMENT Logic: Update the existing row
+            console.log('Processing as DOCUMENT (updating documents table)');
+            const { error: updateError } = await supabase
+                .from('documents')
+                .update({
+                    raw_text: extractedText || null,
+                    summary: extractedData.summary,
+                    title: extractedData.title,
+                    type: extractedData.primaryType || 'other',
+                    content_labels: extractedData.contentLabels,
+                    extracted_data: extractedData,
+                    embedding: embedding.length > 0 ? embedding : null,
+                    processing_status: 'completed',
+                    updated_at: new Date().toISOString(),
+                })
+                .eq('id', documentId);
+
+            if (updateError) {
+                throw new Error(`Failed to update document: ${updateError.message}`);
+            }
         }
 
         // Build response summary

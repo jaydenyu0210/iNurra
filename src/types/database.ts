@@ -515,13 +515,13 @@ export type Database = {
 };
 
 // Enum types
-export type DocumentType = 
-    | 'prescription' 
-    | 'test_result' 
-    | 'discharge_summary' 
-    | 'doctor_notes' 
-    | 'health_metrics' 
-    | 'audio_transcript' 
+export type DocumentType =
+    | 'prescription'
+    | 'test_result'
+    | 'discharge_summary'
+    | 'doctor_notes'
+    | 'health_metrics'
+    | 'audio_transcript'
     | 'body_condition'
     | 'bodily_excretion'
     | 'todo_activity'
@@ -538,6 +538,51 @@ export type Priority = 'low' | 'medium' | 'high' | 'urgent';
 export type Severity = 'mild' | 'moderate' | 'severe' | 'critical';
 
 export type ExcretionType = 'stool' | 'urine' | 'vomit' | 'blood' | 'mucus' | 'discharge' | 'other';
+
+export const CONTENT_LABELS = [
+    "consultation_note",
+    "clinical_note",
+    "progress_note",
+    "diagnosis_report",
+    "discharge_summary",
+    "referral_letter",
+    "treatment_plan",
+    "care_plan",
+    "prescription",
+    "prescription_label",
+    "medication_instruction_sheet",
+    "medication_list",
+    "medication_reconciliation",
+    "lab_test_report",
+    "blood_test_report",
+    "urine_test_report",
+    "imaging_report",
+    "radiology_report",
+    "pathology_report",
+    "vital_signs_report",
+    "health_screening_report",
+    "nursing_notes",
+    "nursing_care_plan",
+    "post_operative_instructions",
+    "home_care_instructions",
+    "monitoring_instructions",
+    "medical_bill",
+    "billing_statement",
+    "insurance_claim",
+    "explanation_of_benefits",
+    "prior_authorization_form",
+    "consent_form",
+    "appointment_summary",
+    "after_visit_summary",
+    "patient_health_record",
+    "symptom_log",
+    "blood_pressure_log",
+    "blood_glucose_log",
+    "weight_record",
+    "device_health_report"
+] as const;
+
+export type ContentLabel = typeof CONTENT_LABELS[number];
 
 // Helper types
 export type Tables<T extends keyof Database['public']['Tables']> = Database['public']['Tables'][T]['Row'];

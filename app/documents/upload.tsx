@@ -1,6 +1,6 @@
 import { useState, useCallback, useEffect, useRef } from 'react';
 import { View, StyleSheet, Image, ScrollView, KeyboardAvoidingView, Platform } from 'react-native';
-import { Text, Card, Button, useTheme, IconButton, ActivityIndicator, ProgressBar, RadioButton, TextInput, HelperText, Portal, Dialog, Modal, Divider, Chip } from 'react-native-paper';
+import { Text, Card, Button, useTheme, IconButton, ActivityIndicator, ProgressBar, RadioButton, TextInput, HelperText, Portal, Dialog, Chip } from 'react-native-paper';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { useRouter, Stack } from 'expo-router';
 import { MaterialCommunityIcons } from '@expo/vector-icons';
@@ -10,7 +10,7 @@ import * as FileSystem from 'expo-file-system/legacy';
 import { tokens } from '../../src/theme';
 import { supabase } from '../../src/services/supabase';
 import { getCurrentUser, transcribeAudio, generateSpeech } from '../../src/services/api';
-import CameraWithOverlay from '../../src/components/CameraWithOverlay';
+
 
 type DocumentType = 'prescription' | 'test_result' | 'discharge_summary' | 'doctor_notes' | 'health_metrics';
 
@@ -72,6 +72,20 @@ export default function UploadScreen() {
     const [isSaving, setIsSaving] = useState(false);
     const currentSoundRef = useRef<any>(null);
 
+    // Stop any playing audio
+    const stopSpeaking = async () => {
+        if (currentSoundRef.current) {
+            try {
+                await currentSoundRef.current.stopAsync();
+                await currentSoundRef.current.unloadAsync();
+            } catch (e) {
+                console.log('Error stopping sound:', e);
+            }
+            currentSoundRef.current = null;
+        }
+        setIsSpeaking(false);
+    };
+
     // Auto-trigger upload when step changes to 'uploading'
     useEffect(() => {
         if (step === 'uploading' && image && !isUploading) {
@@ -84,8 +98,16 @@ export default function UploadScreen() {
             let result;
 
             if (source === 'camera') {
-                setStep('camera');
-                return;
+                const permission = await ImagePicker.requestCameraPermissionsAsync();
+                if (!permission.granted) {
+                    alert('Camera permission is required');
+                    return;
+                }
+                result = await ImagePicker.launchCameraAsync({
+                    mediaTypes: ['images'],
+                    allowsEditing: true,
+                    quality: 0.8,
+                });
             } else {
                 const permission = await ImagePicker.requestMediaLibraryPermissionsAsync();
                 if (!permission.granted) {
@@ -120,6 +142,12 @@ export default function UploadScreen() {
             await stopSpeaking();
             setIsSpeaking(true);
 
+            // Set audio mode for playback (not recording)
+            await Audio.setAudioModeAsync({
+                allowsRecordingIOS: false,
+                playsInSilentModeIOS: true,
+            });
+
             // Calculate status string
             const rangeStatus = calculateRangeStatus(parseFloat(metric.value), metric.normalRangeLower, metric.normalRangeUpper);
             let statusText = '';
@@ -136,7 +164,11 @@ export default function UploadScreen() {
                 statusText ? `Range Status: ${statusText}` : ''
             ].filter(Boolean).join('. ');
 
+            console.log('Speaking metric:', textToSpeak.substring(0, 100) + '...');
+
             const { audioContent } = await generateSpeech(textToSpeak);
+            console.log('Got audio content, length:', audioContent?.length);
+
             const { sound } = await Audio.Sound.createAsync(
                 { uri: `data:audio/mp3;base64,${audioContent}` },
                 { shouldPlay: true }
@@ -154,7 +186,7 @@ export default function UploadScreen() {
         } catch (error) {
             console.error('TTS Error:', error);
             setIsSpeaking(false);
-            alert('Failed to play audio');
+            alert('Failed to play audio: ' + (error as Error).message);
         }
     };
 
@@ -755,18 +787,7 @@ export default function UploadScreen() {
         setUploadedDocId(null); // Reset ID
     };
 
-    const stopSpeaking = async () => {
-        if (currentSoundRef.current) {
-            try {
-                await currentSoundRef.current.stopAsync();
-                await currentSoundRef.current.unloadAsync();
-            } catch (e) {
-                console.log('Error stopping sound:', e);
-            }
-            currentSoundRef.current = null;
-        }
-        setIsSpeaking(false);
-    };
+
 
     const speakText = async (text: string) => {
         if (!text) return;
@@ -804,19 +825,7 @@ export default function UploadScreen() {
         }
     };
 
-    if (step === 'camera') {
-        return (
-            <View style={{ flex: 1, backgroundColor: 'black' }}>
-                <CameraWithOverlay
-                    onCapture={(uri) => {
-                        setImage(uri);
-                        setStep('describe');
-                    }}
-                    onClose={() => setStep('select')}
-                />
-            </View>
-        );
-    }
+
 
     return (
         <SafeAreaView style={[styles.container, { backgroundColor: theme.colors.background }]}>
@@ -1039,7 +1048,7 @@ export default function UploadScreen() {
                         {/* Metrics Summary Cards */}
                         {reviewMetrics.map((metric, index) => {
                             const rangeStatus = calculateRangeStatus(parseFloat(metric.value), metric.normalRangeLower, metric.normalRangeUpper);
-                            const statusColor = rangeStatus === 'normal' ? 'green' : (rangeStatus === 'high' || rangeStatus === 'low' ? 'orange' : theme.colors.primary);
+                            const statusColor = rangeStatus === 'normal' ? '#4CAF50' : (rangeStatus === 'high' || rangeStatus === 'low' ? '#FF9800' : theme.colors.primary);
 
                             return (
                                 <Card
@@ -1255,35 +1264,128 @@ export default function UploadScreen() {
                 </Dialog>
 
                 {/* Condition Modal */}
-                <Dialog visible={editingItem?.type === 'body_condition'} onDismiss={() => setEditingItem(null)}>
-                    <Dialog.Title>Edit Condition</Dialog.Title>
-                    <Dialog.Content>
-                        {editingItem?.type === 'body_condition' && (
-                            <ScrollView>
-                                <TextInput
-                                    label="Type"
-                                    value={reviewBodyConditions[editingItem.index]?.conditionType}
-                                    onChangeText={(t) => handleUpdateBodyCondition(editingItem.index, 'conditionType', t)}
-                                    style={styles.input} mode="outlined"
-                                />
-                                <TextInput
-                                    label="Location"
-                                    value={reviewBodyConditions[editingItem.index]?.bodyLocation}
-                                    onChangeText={(t) => handleUpdateBodyCondition(editingItem.index, 'bodyLocation', t)}
-                                    style={styles.input} mode="outlined"
-                                />
-                                <TextInput
-                                    label="Notes"
-                                    value={reviewBodyConditions[editingItem.index]?.notes}
-                                    onChangeText={(t) => handleUpdateBodyCondition(editingItem.index, 'notes', t)}
-                                    style={styles.input} mode="outlined" multiline
-                                />
-                            </ScrollView>
-                        )}
-                    </Dialog.Content>
-                    <Dialog.Actions>
-                        <Button onPress={() => setEditingItem(null)}>Done</Button>
-                    </Dialog.Actions>
+                <Dialog visible={editingItem?.type === 'body_condition'} onDismiss={() => setEditingItem(null)} style={{ width: '90%', alignSelf: 'center', borderRadius: 8 }}>
+                    <View style={{ flexDirection: 'row', justifyContent: 'flex-end', position: 'absolute', right: 0, top: 0, zIndex: 1 }}>
+                        <IconButton icon="close" size={20} onPress={() => setEditingItem(null)} />
+                    </View>
+                    <Dialog.Title style={{ paddingRight: 40 }}>
+                        {editingItem?.type === 'body_condition' ? reviewBodyConditions[editingItem.index]?.conditionType || 'Body Condition' : 'Body Condition'}
+                    </Dialog.Title>
+                    <Dialog.ScrollArea style={{ maxHeight: 630, paddingHorizontal: 0 }}>
+                        <ScrollView contentContainerStyle={{ paddingHorizontal: 24, paddingTop: 16, paddingBottom: 16 }}>
+                            {editingItem?.type === 'body_condition' && (
+                                <View>
+                                    {/* Location and Severity */}
+                                    <View style={{ flexDirection: 'row', justifyContent: 'space-between', marginBottom: 16 }}>
+                                        <View style={{ flex: 1 }}>
+                                            <Text variant="labelLarge" style={{ color: theme.colors.primary }}>Location</Text>
+                                            <Text variant="bodyMedium">{reviewBodyConditions[editingItem.index]?.bodyLocation || 'Unknown'}</Text>
+                                        </View>
+                                        <View>
+                                            <Text variant="labelLarge" style={{ color: theme.colors.primary }}>Severity</Text>
+                                            <Chip style={{
+                                                backgroundColor: reviewBodyConditions[editingItem.index]?.severity === 'mild' ? '#4CAF5020' :
+                                                    reviewBodyConditions[editingItem.index]?.severity === 'moderate' ? '#FF980020' : '#F4433620'
+                                            }}>
+                                                <Text style={{
+                                                    color: reviewBodyConditions[editingItem.index]?.severity === 'mild' ? '#4CAF50' :
+                                                        reviewBodyConditions[editingItem.index]?.severity === 'moderate' ? '#FF9800' : '#F44336',
+                                                    fontWeight: 'bold', textTransform: 'capitalize'
+                                                }}>
+                                                    {reviewBodyConditions[editingItem.index]?.severity || 'Unknown'}
+                                                </Text>
+                                            </Chip>
+                                        </View>
+                                    </View>
+
+                                    {/* Possible Condition */}
+                                    <Text variant="labelLarge" style={{ color: theme.colors.primary, marginBottom: 4 }}>Possible Condition</Text>
+                                    {(() => {
+                                        const text = reviewBodyConditions[editingItem.index]?.possibleCondition || 'Not available';
+                                        const sentences = text.split(/(?<=[.!?])\s+/).filter(Boolean);
+                                        if (sentences.length <= 1) {
+                                            return <Text variant="bodyMedium" style={{ marginBottom: 16 }}>{text}</Text>;
+                                        }
+                                        return (
+                                            <View style={{ marginBottom: 16 }}>
+                                                {sentences.map((s: string, i: number) => (
+                                                    <Text key={i} variant="bodyMedium" style={{ marginBottom: 2 }}>• {s.trim()}</Text>
+                                                ))}
+                                            </View>
+                                        );
+                                    })()}
+
+                                    {/* Possible Cause */}
+                                    <Text variant="labelLarge" style={{ color: theme.colors.primary, marginBottom: 4 }}>Possible Cause</Text>
+                                    {(() => {
+                                        const text = reviewBodyConditions[editingItem.index]?.possibleCause || 'Not available';
+                                        const sentences = text.split(/(?<=[.!?])\s+/).filter(Boolean);
+                                        if (sentences.length <= 1) {
+                                            return <Text variant="bodyMedium" style={{ marginBottom: 16 }}>{text}</Text>;
+                                        }
+                                        return (
+                                            <View style={{ marginBottom: 16 }}>
+                                                {sentences.map((s: string, i: number) => (
+                                                    <Text key={i} variant="bodyMedium" style={{ marginBottom: 2 }}>• {s.trim()}</Text>
+                                                ))}
+                                            </View>
+                                        );
+                                    })()}
+
+                                    {/* Care Advice */}
+                                    <Text variant="labelLarge" style={{ color: theme.colors.primary, marginBottom: 4 }}>Care Advice</Text>
+                                    {(() => {
+                                        const text = reviewBodyConditions[editingItem.index]?.careAdvice || 'Not available';
+                                        const sentences = text.split(/(?<=[.!?])\s+/).filter(Boolean);
+                                        if (sentences.length <= 1) {
+                                            return <Text variant="bodyMedium" style={{ marginBottom: 16 }}>{text}</Text>;
+                                        }
+                                        return (
+                                            <View style={{ marginBottom: 16 }}>
+                                                {sentences.map((s: string, i: number) => (
+                                                    <Text key={i} variant="bodyMedium" style={{ marginBottom: 2 }}>• {s.trim()}</Text>
+                                                ))}
+                                            </View>
+                                        );
+                                    })()}
+
+                                    {/* Precautions */}
+                                    <Text variant="labelLarge" style={{ color: theme.colors.primary, marginBottom: 4 }}>Precautions</Text>
+                                    {(() => {
+                                        const text = reviewBodyConditions[editingItem.index]?.precautions || 'Not available';
+                                        const sentences = text.split(/(?<=[.!?])\s+/).filter(Boolean);
+                                        if (sentences.length <= 1) {
+                                            return <Text variant="bodyMedium" style={{ marginBottom: 16 }}>{text}</Text>;
+                                        }
+                                        return (
+                                            <View style={{ marginBottom: 16 }}>
+                                                {sentences.map((s: string, i: number) => (
+                                                    <Text key={i} variant="bodyMedium" style={{ marginBottom: 2 }}>• {s.trim()}</Text>
+                                                ))}
+                                            </View>
+                                        );
+                                    })()}
+
+                                    {/* When to Seek Care */}
+                                    <Text variant="labelLarge" style={{ color: theme.colors.error, marginBottom: 4 }}>When to Seek Care</Text>
+                                    {(() => {
+                                        const text = reviewBodyConditions[editingItem.index]?.whenToSeekCare || 'Not available';
+                                        const sentences = text.split(/(?<=[.!?])\s+/).filter(Boolean);
+                                        if (sentences.length <= 1) {
+                                            return <Text variant="bodyMedium">{text}</Text>;
+                                        }
+                                        return (
+                                            <View>
+                                                {sentences.map((s: string, i: number) => (
+                                                    <Text key={i} variant="bodyMedium" style={{ marginBottom: 2 }}>• {s.trim()}</Text>
+                                                ))}
+                                            </View>
+                                        );
+                                    })()}
+                                </View>
+                            )}
+                        </ScrollView>
+                    </Dialog.ScrollArea>
                 </Dialog>
 
                 {/* Todo Modal */}
@@ -1318,91 +1420,91 @@ export default function UploadScreen() {
                     </Dialog.Actions>
                 </Dialog>
                 {/* Metric Details Modal */}
-                <Modal
+                <Dialog
                     visible={selectedMetricIndex !== null}
                     onDismiss={() => setSelectedMetricIndex(null)}
-                    contentContainerStyle={{ backgroundColor: 'white', padding: 20, margin: 20, borderRadius: 8 }}
+                    style={{ width: '90%', alignSelf: 'center', borderRadius: 8 }}
                 >
-                    <ScrollView>
-                        {selectedMetricIndex !== null && reviewMetrics[selectedMetricIndex] && (() => {
-                            const metric = reviewMetrics[selectedMetricIndex];
-                            const rangeStatus = calculateRangeStatus(parseFloat(metric.value), metric.normalRangeLower, metric.normalRangeUpper);
-                            const statusColor = rangeStatus === 'normal' ? 'green' : (rangeStatus === 'high' || rangeStatus === 'low' ? 'orange' : theme.colors.primary);
+                    <View style={{ flexDirection: 'row', justifyContent: 'flex-end', position: 'absolute', right: 0, top: 0, zIndex: 1 }}>
+                        <IconButton icon="close" size={20} onPress={() => setSelectedMetricIndex(null)} />
+                    </View>
+                    <Dialog.Title style={{ paddingRight: 40 }}>
+                        {selectedMetricIndex !== null ? reviewMetrics[selectedMetricIndex]?.name || 'Health Metric' : 'Health Metric'}
+                    </Dialog.Title>
+                    <Dialog.ScrollArea style={{ maxHeight: 630, paddingHorizontal: 0 }}>
+                        <ScrollView contentContainerStyle={{ paddingHorizontal: 24, paddingTop: 16, paddingBottom: 16 }}>
+                            {selectedMetricIndex !== null && reviewMetrics[selectedMetricIndex] && (() => {
+                                const metric = reviewMetrics[selectedMetricIndex];
+                                const rangeStatus = calculateRangeStatus(parseFloat(metric.value), metric.normalRangeLower, metric.normalRangeUpper);
 
-                            return (
-                                <View>
-                                    <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 10 }}>
-                                        <Text variant="headlineSmall" style={{ flex: 1 }}>{metric.name}</Text>
-                                        <IconButton
-                                            icon={isSpeaking ? 'stop' : 'volume-high'}
-                                            mode="contained"
-                                            onPress={() => speakMetricDetails(metric)}
-                                        />
-                                    </View>
-
-                                    <Divider style={{ marginVertical: 10 }} />
-
-                                    <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 20 }}>
-                                        <View>
-                                            <Text variant="labelMedium" style={{ color: theme.colors.outline }}>Value</Text>
-                                            <Text variant="headlineMedium" style={{ fontWeight: 'bold', color: theme.colors.primary }}>
-                                                {metric.value} <Text variant="titleMedium">{metric.unit}</Text>
+                                return (
+                                    <View>
+                                        {/* Value and Status */}
+                                        <View style={{ marginBottom: 16 }}>
+                                            <View style={{ flexDirection: 'row', alignItems: 'center', marginBottom: 4 }}>
+                                                <Text variant="labelLarge" style={{ color: theme.colors.primary }}>Value</Text>
+                                                {rangeStatus && (
+                                                    <Chip style={{ backgroundColor: rangeStatus === 'normal' ? '#4CAF5020' : '#FF980020', marginLeft: 12 }}>
+                                                        <Text style={{ color: rangeStatus === 'normal' ? '#4CAF50' : '#FF9800', fontWeight: 'bold' }}>
+                                                            {rangeStatus === 'normal' ? 'Normal' : (rangeStatus === 'high' ? 'High' : 'Low')}
+                                                        </Text>
+                                                    </Chip>
+                                                )}
+                                            </View>
+                                            <Text variant="headlineMedium" style={{ fontWeight: 'bold' }}>
+                                                {metric.value} {metric.unit}
                                             </Text>
                                         </View>
 
-                                        {rangeStatus && (
-                                            <View>
-                                                <Text variant="labelMedium" style={{ color: theme.colors.outline, marginBottom: 4 }}>Range Status</Text>
-                                                <Chip style={{ backgroundColor: statusColor + '20' }}>
-                                                    <Text style={{ color: statusColor, fontWeight: 'bold' }}>
-                                                        {rangeStatus === 'normal' ? 'Within Normal Range' : (rangeStatus === 'high' ? 'Too High' : 'Too Low')}
-                                                    </Text>
-                                                </Chip>
-                                            </View>
+                                        {/* Normal Range */}
+                                        {(metric.normalRangeLower || metric.normalRangeUpper) && (
+                                            <>
+                                                <Text variant="labelLarge" style={{ color: theme.colors.primary, marginBottom: 4 }}>Normal Range</Text>
+                                                <Text variant="bodyMedium" style={{ marginBottom: 16 }}>
+                                                    {metric.normalRangeLower || '?'} - {metric.normalRangeUpper || '?'} {metric.unit}
+                                                </Text>
+                                            </>
                                         )}
+
+                                        {/* Precautions */}
+                                        <Text variant="labelLarge" style={{ color: theme.colors.primary, marginBottom: 4 }}>Precautions</Text>
+                                        {(() => {
+                                            const text = metric.measurementPrecautions || 'Not available';
+                                            const sentences = text.split(/(?<=[.!?])\s+/).filter(Boolean);
+                                            if (sentences.length <= 1) {
+                                                return <Text variant="bodyMedium" style={{ marginBottom: 16 }}>{text}</Text>;
+                                            }
+                                            return (
+                                                <View style={{ marginBottom: 16 }}>
+                                                    {sentences.map((s: string, i: number) => (
+                                                        <Text key={i} variant="bodyMedium" style={{ marginBottom: 2 }}>• {s.trim()}</Text>
+                                                    ))}
+                                                </View>
+                                            );
+                                        })()}
+
+                                        {/* Monitoring Guidance */}
+                                        <Text variant="labelLarge" style={{ color: theme.colors.primary, marginBottom: 4 }}>Monitoring Guidance</Text>
+                                        {(() => {
+                                            const text = metric.monitoringGuidance || 'Not available';
+                                            const sentences = text.split(/(?<=[.!?])\s+/).filter(Boolean);
+                                            if (sentences.length <= 1) {
+                                                return <Text variant="bodyMedium">{text}</Text>;
+                                            }
+                                            return (
+                                                <View>
+                                                    {sentences.map((s: string, i: number) => (
+                                                        <Text key={i} variant="bodyMedium" style={{ marginBottom: 2 }}>• {s.trim()}</Text>
+                                                    ))}
+                                                </View>
+                                            );
+                                        })()}
                                     </View>
-
-                                    {(metric.normalRangeLower || metric.normalRangeUpper) && (
-                                        <View style={{ marginBottom: 15 }}>
-                                            <Text variant="titleMedium" style={{ fontWeight: 'bold', marginBottom: 5 }}>Normal Range</Text>
-                                            <Text variant="bodyLarge">
-                                                {metric.normalRangeLower || '?'} - {metric.normalRangeUpper || '?'} {metric.unit}
-                                            </Text>
-                                        </View>
-                                    )}
-
-                                    {metric.measurementPrecautions && (
-                                        <View style={{ marginBottom: 15, backgroundColor: theme.colors.secondaryContainer, padding: 15, borderRadius: 8 }}>
-                                            <View style={{ flexDirection: 'row', alignItems: 'center', marginBottom: 5 }}>
-                                                <MaterialCommunityIcons name="alert-circle-outline" size={20} color={theme.colors.onSecondaryContainer} />
-                                                <Text variant="titleMedium" style={{ fontWeight: 'bold', marginLeft: 8, color: theme.colors.onSecondaryContainer }}>Precautions</Text>
-                                            </View>
-                                            <Text variant="bodyMedium" style={{ color: theme.colors.onSecondaryContainer }}>
-                                                {formatSentences(metric.measurementPrecautions)}
-                                            </Text>
-                                        </View>
-                                    )}
-
-                                    {metric.monitoringGuidance && (
-                                        <View style={{ marginBottom: 15, backgroundColor: theme.colors.tertiaryContainer, padding: 15, borderRadius: 8 }}>
-                                            <View style={{ flexDirection: 'row', alignItems: 'center', marginBottom: 5 }}>
-                                                <MaterialCommunityIcons name="clipboard-pulse-outline" size={20} color={theme.colors.onTertiaryContainer} />
-                                                <Text variant="titleMedium" style={{ fontWeight: 'bold', marginLeft: 8, color: theme.colors.onTertiaryContainer }}>Monitoring Guidance</Text>
-                                            </View>
-                                            <Text variant="bodyMedium" style={{ color: theme.colors.onTertiaryContainer }}>
-                                                {formatSentences(metric.monitoringGuidance)}
-                                            </Text>
-                                        </View>
-                                    )}
-
-                                    <Button mode="contained" onPress={() => setSelectedMetricIndex(null)} style={{ marginTop: 10 }}>
-                                        Close
-                                    </Button>
-                                </View>
-                            );
-                        })()}
-                    </ScrollView>
-                </Modal>
+                                );
+                            })()}
+                        </ScrollView>
+                    </Dialog.ScrollArea>
+                </Dialog>
             </Portal>
         </SafeAreaView>
     );
@@ -1410,24 +1512,7 @@ export default function UploadScreen() {
 
 
 
-const formatSentences = (text: string) => {
-    if (!text) return null;
-    // Split by period followed by space, or newline
-    const sentences = text.match(/[^.!?]+[.!?]+/g) || [text];
 
-    if (sentences.length <= 1) return <Text>{text}</Text>;
-
-    return (
-        <View>
-            {sentences.map((s, i) => (
-                <View key={i} style={{ flexDirection: 'row', marginBottom: 4, alignItems: 'flex-start' }}>
-                    <Text style={{ marginRight: 6 }}>{'\u2022'}</Text>
-                    <Text style={{ flex: 1 }}>{s.trim()}</Text>
-                </View>
-            ))}
-        </View>
-    );
-};
 
 const styles = StyleSheet.create({
     container: { flex: 1 },

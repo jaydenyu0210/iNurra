@@ -213,7 +213,7 @@ export default function MedicationDetailScreen() {
                 <Card style={styles.detailsCard} mode="elevated">
                     <Card.Content>
                         <View style={styles.detailRow}>
-                            <Text variant="labelMedium" style={{ color: theme.colors.onSurfaceVariant }}>
+                            <Text variant="labelLarge" style={{ color: theme.colors.primary, marginBottom: 4 }}>
                                 Name
                             </Text>
                             <Text variant="bodyLarge" style={{ color: theme.colors.onSurface }}>
@@ -225,7 +225,7 @@ export default function MedicationDetailScreen() {
 
                         {medication.indication && (
                             <View style={styles.detailRow}>
-                                <Text variant="labelMedium" style={{ color: theme.colors.onSurfaceVariant }}>
+                                <Text variant="labelLarge" style={{ color: theme.colors.primary, marginBottom: 4 }}>
                                     Indication
                                 </Text>
                                 {(() => {
@@ -242,7 +242,7 @@ export default function MedicationDetailScreen() {
 
                         {medication.dosage && (
                             <View style={styles.detailRow}>
-                                <Text variant="labelMedium" style={{ color: theme.colors.onSurfaceVariant }}>
+                                <Text variant="labelLarge" style={{ color: theme.colors.primary, marginBottom: 4 }}>
                                     Dosage
                                 </Text>
                                 <Text variant="bodyLarge" style={{ color: theme.colors.onSurface }}>
@@ -253,7 +253,7 @@ export default function MedicationDetailScreen() {
 
                         {medication.instructions && (
                             <View style={styles.detailRow}>
-                                <Text variant="labelMedium" style={{ color: theme.colors.onSurfaceVariant }}>
+                                <Text variant="labelLarge" style={{ color: theme.colors.primary, marginBottom: 4 }}>
                                     Instructions
                                 </Text>
                                 <Text variant="bodyLarge" style={{ color: theme.colors.onSurface }}>
@@ -264,7 +264,7 @@ export default function MedicationDetailScreen() {
 
                         {medication.precaution && (
                             <View style={styles.detailRow}>
-                                <Text variant="labelMedium" style={{ color: theme.colors.onSurfaceVariant }}>
+                                <Text variant="labelLarge" style={{ color: theme.colors.primary, marginBottom: 4 }}>
                                     Precaution
                                 </Text>
                                 {(() => {
@@ -281,7 +281,7 @@ export default function MedicationDetailScreen() {
 
                         {medication.monitoring_recommendation && (
                             <View style={styles.detailRow}>
-                                <Text variant="labelMedium" style={{ color: theme.colors.onSurfaceVariant }}>
+                                <Text variant="labelLarge" style={{ color: theme.colors.primary, marginBottom: 4 }}>
                                     Monitoring Recommendation
                                 </Text>
                                 {(() => {
@@ -295,6 +295,16 @@ export default function MedicationDetailScreen() {
                                 })()}
                             </View>
                         )}
+
+                        {/* Recorded At */}
+                        <View style={styles.detailRow}>
+                            <Text variant="labelLarge" style={{ color: theme.colors.primary, marginBottom: 4 }}>
+                                Recorded At
+                            </Text>
+                            <Text variant="bodyMedium" style={{ color: theme.colors.onSurface }}>
+                                {new Date(medication.created_at).toLocaleDateString('en-US', { year: 'numeric', month: 'long', day: 'numeric', hour: '2-digit', minute: '2-digit' })}
+                            </Text>
+                        </View>
 
                         <Button
                             mode="contained"

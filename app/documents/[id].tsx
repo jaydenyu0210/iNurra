@@ -151,7 +151,7 @@ export default function DocumentDetailScreen() {
 
     const handleDelete = () => {
         if (!document) return;
-        
+
         Alert.alert(
             'Delete Document',
             `Are you sure you want to delete "${document.title || document.file_name}"? This will also remove any extracted data.`,
@@ -257,14 +257,17 @@ export default function DocumentDetailScreen() {
                 {/* Summary Card */}
                 <Card style={styles.summaryCard} mode="elevated">
                     <Card.Content>
-                        <Text variant="titleMedium" style={{ color: theme.colors.onSurface, marginBottom: tokens.spacing.sm }}>
+                        <Text variant="labelLarge" style={{ color: theme.colors.primary, marginBottom: 4 }}>
                             Summary
                         </Text>
-                        <Text variant="bodyMedium" style={{ color: theme.colors.onSurfaceVariant, lineHeight: 22 }}>
+                        <Text variant="bodyMedium" style={{ color: theme.colors.onSurface, lineHeight: 22, marginBottom: tokens.spacing.md }}>
                             {document.summary || 'No summary available for this document.'}
                         </Text>
-                        <Text variant="labelSmall" style={{ color: theme.colors.outline, marginTop: tokens.spacing.md }}>
-                            Uploaded: {formatDate(document.created_at)}
+                        <Text variant="labelLarge" style={{ color: theme.colors.primary, marginBottom: 4 }}>
+                            Recorded At
+                        </Text>
+                        <Text variant="bodyMedium" style={{ color: theme.colors.onSurface }}>
+                            {formatDate(document.created_at)}
                         </Text>
                     </Card.Content>
                 </Card>

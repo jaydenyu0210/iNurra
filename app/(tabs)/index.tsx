@@ -44,21 +44,12 @@ export default function HomeScreen() {
         },
     ];
 
-    const getGreeting = () => {
-        const hour = new Date().getHours();
-        if (hour < 12) return 'Good morning';
-        if (hour < 18) return 'Good afternoon';
-        return 'Good evening';
-    };
 
-    const userName = user?.user_metadata?.full_name || 'Friend';
 
     return (
         <SafeAreaView style={[styles.container, { backgroundColor: theme.colors.background }]} edges={['top']}>
             <View style={styles.header}>
-                <View style={styles.logoContainer}>
-                    <MaterialCommunityIcons name="pulse" size={28} color={theme.colors.primary} />
-                </View>
+
                 <IconButton
                     icon="cog"
                     size={24}
@@ -66,14 +57,7 @@ export default function HomeScreen() {
                 />
             </View>
 
-            <View style={styles.greetingContainer}>
-                <Text variant="headlineMedium" style={{ fontWeight: '400', color: theme.colors.onSurfaceVariant }}>
-                    {getGreeting()},
-                </Text>
-                <Text variant="displaySmall" style={{ fontWeight: '700', color: theme.colors.onBackground, marginTop: -4 }}>
-                    {userName}
-                </Text>
-            </View>
+
 
             <ScrollView contentContainerStyle={styles.content}>
                 {DASHBOARD_BLOCKS.map((block) => (

@@ -140,7 +140,7 @@ export default function BodyConditionDetailScreen() {
         );
     }
 
-    const title = type === 'condition' 
+    const title = type === 'condition'
         ? `${condition?.condition_type || 'Body Condition'}`
         : `${excretion?.excretion_type ? excretion.excretion_type.charAt(0).toUpperCase() + excretion.excretion_type.slice(1) : 'Excretion'}`;
 
@@ -168,14 +168,14 @@ export default function BodyConditionDetailScreen() {
                                 <DetailItem label="Type" value={condition.condition_type} />
                                 <DetailItem label="Location" value={condition.body_location} />
                                 <DetailItem label="Description" value={condition.location_description} />
-                                <DetailItem 
-                                    label="Severity" 
-                                    value={condition.severity} 
+                                <DetailItem
+                                    label="Severity"
+                                    value={condition.severity}
                                     valueColor={theme.colors.error}
                                 />
-                                <DetailItem 
-                                    label="Observed" 
-                                    value={new Date(condition.observed_at).toLocaleString()} 
+                                <DetailItem
+                                    label="Observed"
+                                    value={new Date(condition.observed_at).toLocaleString()}
                                 />
                                 <View style={styles.row}>
                                     <DetailItem label="Width" value={condition.width_mm ? `${condition.width_mm} mm` : null} style={{ flex: 1 }} />
@@ -196,9 +196,9 @@ export default function BodyConditionDetailScreen() {
                                 <DetailItem label="Consistency" value={excretion.consistency} />
                                 <DetailItem label="Volume" value={excretion.volume_ml ? `${excretion.volume_ml} ml` : null} />
                                 <DetailItem label="Frequency" value={excretion.frequency_per_day ? `${excretion.frequency_per_day}/day` : null} />
-                                <DetailItem 
-                                    label="Blood Present" 
-                                    value={excretion.blood_present ? 'Yes' : 'No'} 
+                                <DetailItem
+                                    label="Blood Present"
+                                    value={excretion.blood_present ? 'Yes' : 'No'}
                                     valueColor={excretion.blood_present ? theme.colors.error : undefined}
                                 />
                                 <DetailItem label="Pain Level" value={excretion.pain_level ? `${excretion.pain_level}/10` : null} />
@@ -220,8 +220,8 @@ function DetailItem({ label, value, valueColor, style }: { label: string, value:
     if (!value) return null;
     return (
         <View style={[styles.detailItem, style]}>
-            <Text variant="labelMedium" style={{ color: theme.colors.onSurfaceVariant }}>{label}</Text>
-            <Text variant="bodyLarge" style={{ color: valueColor || theme.colors.onSurface, marginTop: 2 }}>{value}</Text>
+            <Text variant="labelLarge" style={{ color: theme.colors.primary, marginBottom: 4 }}>{label}</Text>
+            <Text variant="bodyMedium" style={{ color: valueColor || theme.colors.onSurface, marginTop: 2 }}>{value}</Text>
         </View>
     );
 }

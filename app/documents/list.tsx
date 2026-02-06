@@ -30,8 +30,9 @@ export default function DocumentsListScreen() {
     const fetchDocuments = useCallback(async () => {
         if (!user?.id) return;
         if (!supabase) return;
-        
+
         try {
+            // Fetch all documents first
             const { data: docs, error } = await supabase
                 .from('documents')
                 .select('id, type, content_labels, file_name, title, summary, created_at')
@@ -39,7 +40,23 @@ export default function DocumentsListScreen() {
                 .order('created_at', { ascending: false });
 
             if (error) throw error;
-            setDocuments(docs || []);
+
+            // Fetch document IDs that have linked data
+            const [medsResult, metricsResult, conditionsResult] = await Promise.all([
+                supabase.from('medications').select('document_id').eq('user_id', user.id),
+                supabase.from('health_metrics').select('source_document_id').eq('user_id', user.id),
+                supabase.from('body_conditions').select('document_id').eq('user_id', user.id),
+            ]);
+
+            // Collect all document IDs that have extracted data
+            const excludedIds = new Set<string>();
+            medsResult.data?.forEach((m: any) => m.document_id && excludedIds.add(m.document_id));
+            metricsResult.data?.forEach((m: any) => m.source_document_id && excludedIds.add(m.source_document_id));
+            conditionsResult.data?.forEach((c: any) => c.document_id && excludedIds.add(c.document_id));
+
+            // Filter out documents with extracted data
+            const filteredDocs = (docs || []).filter((doc: any) => !excludedIds.has(doc.id));
+            setDocuments(filteredDocs);
         } catch (error) {
             console.error('Error fetching documents:', error);
         } finally {
@@ -94,11 +111,11 @@ export default function DocumentsListScreen() {
             case 'bodily_excretion': return 'water';
             case 'todo_activity': return 'checkbox-marked-circle-outline';
         }
-        
+
         // Fallback to checking labels if type is generic or matches specific conditions
         if (labels?.includes('prescription')) return 'pill';
         if (labels?.includes('health_metrics')) return 'heart-pulse';
-        
+
         return 'file';
     };
 
@@ -142,10 +159,10 @@ export default function DocumentsListScreen() {
                         <Card key={doc.id} style={styles.card} mode="elevated" onPress={() => router.push(`/documents/${doc.id}`)} onLongPress={() => handleDeleteDocument(doc.id, doc.title || doc.file_name)}>
                             <Card.Content style={styles.cardContent}>
                                 <View style={[styles.iconBox, { backgroundColor: theme.colors.secondaryContainer }]}>
-                                    <MaterialCommunityIcons 
-                                        name={getDocTypeIcon(doc.type, doc.content_labels) as any} 
-                                        size={24} 
-                                        color={theme.colors.secondary} 
+                                    <MaterialCommunityIcons
+                                        name={getDocTypeIcon(doc.type, doc.content_labels) as any}
+                                        size={24}
+                                        color={theme.colors.secondary}
                                     />
                                 </View>
                                 <View style={styles.info}>
