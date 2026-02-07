@@ -243,17 +243,6 @@ export default function DocumentDetailScreen() {
                     </Card>
                 )}
 
-                {/* Content Labels */}
-                {document.content_labels && document.content_labels.length > 0 && (
-                    <View style={styles.labelsContainer}>
-                        {document.content_labels.map((label, index) => (
-                            <Chip key={index} style={styles.labelChip} textStyle={{ fontSize: 12 }}>
-                                {label.replace('_', ' ').toUpperCase()}
-                            </Chip>
-                        ))}
-                    </View>
-                )}
-
                 {/* Summary Card */}
                 <Card style={styles.summaryCard} mode="elevated">
                     <Card.Content>

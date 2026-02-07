@@ -85,13 +85,13 @@ Return a JSON object with this EXACT structure:
     "quantity": "number|null",
     "frequencyHours": "number|null",  // Convert to hours: daily=24, BID=12, TID=8, QID=6
     "durationDays": "number|null",
-    "startDate": "YYYY-MM-DD",  // Tomorrow's date
+    "startDate": "YYYY-MM-DD",  // Today's date (medication start date)
     "endDate": "YYYY-MM-DD|null",
     "instructions": "string|null",
     "indication": "string|null",  // REQUIRED: Infer common usage (e.g. 'Treats high blood pressure'). Max 1 sentence.
     "precaution": "string", // MANDATORY: Generate a concise 1-paragraph precaution based on medical knowledge. DO NOT leave empty.
     "monitoring_recommendation": "string", // MANDATORY: Generate a concise 1-paragraph monitoring recommendation. DO NOT leave empty.
-    "schedule": ["ISO8601 timestamps for each dose..."],  // Full schedule starting tomorrow
+    "schedule": ["ISO8601 timestamps for each dose..."],  // Full schedule starting from the provided start time
     "calendarEvents": [{
       "title": "Take [medication name]",
       "scheduledAt": "ISO8601",
@@ -188,7 +188,7 @@ Return a JSON object with this EXACT structure:
 
 5. **DATES**: 
    - If no year specified, use current year
-   - Medication schedules start tomorrow
+   - Medication schedules start from the provided start time (next half hour from now)
    - Use ISO 8601 format for all timestamps
 
 6. **BE INCLUSIVE**: When in doubt, INCLUDE the label. It's better to have extra labels than miss important ones.
@@ -289,11 +289,22 @@ serve(async (req) => {
 
         // Step 3: Classify with Gemini multimodal (image + text)
         console.log('[Step 5] Classifying document with Gemini multimodal...');
-        const currentTimestamp = new Date().toISOString();
-        const currentYear = new Date().getFullYear();
-        const tomorrow = new Date();
-        tomorrow.setDate(tomorrow.getDate() + 1);
-        const tomorrowStr = tomorrow.toISOString().split('T')[0];
+        const now = new Date();
+        const currentTimestamp = now.toISOString();
+        const currentYear = now.getFullYear();
+        // Round up to next :00 or :30 for medication start time
+        const medStartTime = new Date(now);
+        const mins = medStartTime.getMinutes();
+        if (mins === 0 && medStartTime.getSeconds() === 0) {
+            medStartTime.setSeconds(0, 0);
+        } else if (mins < 30) {
+            medStartTime.setMinutes(30, 0, 0);
+        } else {
+            medStartTime.setMinutes(0, 0, 0);
+            medStartTime.setHours(medStartTime.getHours() + 1);
+        }
+        const medStartDateStr = medStartTime.toISOString().split('T')[0];
+        const medStartTimeStr = medStartTime.toISOString();
 
         // Step 2.5: Removed separate detection. We rely on the main classification.
 
@@ -340,7 +351,8 @@ serve(async (req) => {
 CONTEXT:
 - CURRENT TIMESTAMP: ${currentTimestamp}
 - CURRENT YEAR: ${currentYear}
-- TOMORROW'S DATE (for medication start): ${tomorrowStr}
+- MEDICATION START DATE: ${medStartDateStr}
+- MEDICATION START TIME (next half-hour): ${medStartTimeStr}
 - If a date is found without a year, USE THE CURRENT YEAR (${currentYear}).
 - If no date/time is found, USE "${currentTimestamp}" as the timestamp.
 ${existingLabelsContext}

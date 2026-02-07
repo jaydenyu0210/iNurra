@@ -125,7 +125,7 @@ export default function UploadScreen() {
         setSpeakingItemId(null);
     }, []);
 
-    // Stop speaking when screen loses focus (e.g. clicking "Ask AI" or navigating away)
+    // Stop speaking when screen loses focus (e.g. clicking "Ask Nurra" or navigating away)
     useFocusEffect(
         useCallback(() => {
             return () => {
@@ -572,11 +572,18 @@ export default function UploadScreen() {
             if (!userId) throw new Error('User not authenticated (Missing User ID)');
             if (!documentId) throw new Error('Document not found (Missing Document ID)');
 
-            // Calculate Tomorrow for start date
-            const tomorrow = new Date();
-            tomorrow.setDate(tomorrow.getDate() + 1);
-            tomorrow.setHours(0, 0, 0, 0);
-            const tomorrowIsoDate = tomorrow.toISOString().split('T')[0];
+            // Calculate start time: round up to next :00 or :30
+            const startDateTime = new Date();
+            const startMinutes = startDateTime.getMinutes();
+            if (startMinutes === 0 && startDateTime.getSeconds() === 0) {
+                startDateTime.setSeconds(0, 0); // already on the hour
+            } else if (startMinutes < 30) {
+                startDateTime.setMinutes(30, 0, 0);
+            } else {
+                startDateTime.setMinutes(0, 0, 0);
+                startDateTime.setHours(startDateTime.getHours() + 1);
+            }
+            const startDateIso = startDateTime.toISOString().split('T')[0];
 
             // Prepare medications for insertion
             const medsToInsert = reviewMeds.map(med => ({
@@ -591,7 +598,7 @@ export default function UploadScreen() {
                 schedule: null, // We don't save the raw schedule array to DB column 'schedule' unless schema supports it. Usually we generate events.
                 end_date: med.endDate || null,
                 is_active: true,
-                start_date: tomorrowIsoDate, // Start Tomorrow per user request
+                start_date: startDateIso, // Start today at next half-hour
                 indication: med.indication || null,
                 precaution: med.precaution || null,
                 monitoring_recommendation: med.monitoringRecommendation || null,
@@ -753,7 +760,7 @@ export default function UploadScreen() {
             if (insertedMeds && insertedMeds.length > 0) {
                 const calendarEvents: any[] = [];
 
-                console.log(`=== CALENDAR SCHEDULING (Starting ${tomorrowIsoDate}) ===`);
+                console.log(`=== CALENDAR SCHEDULING (Starting ${startDateTime.toISOString()}) ===`);
 
                 // We iterate using the original reviewMeds to access the AI 'schedule' if valid
                 // CAUTION: Assumes insertedMeds matches index order of reviewMeds
@@ -764,10 +771,10 @@ export default function UploadScreen() {
                     if (originalMed.schedule && Array.isArray(originalMed.schedule) && originalMed.schedule.length > 0) {
                         console.log(`Using AI schedule for ${med.name} (${originalMed.schedule.length} events)`);
 
-                        // Filter out events before Tomorrow
+                        // Filter out events before the start time
                         const validEvents = originalMed.schedule.filter((isoString: string) => {
                             const eventDate = new Date(isoString);
-                            return eventDate >= tomorrow;
+                            return eventDate >= startDateTime;
                         });
 
                         console.log(`Filtered ${originalMed.schedule.length - validEvents.length} past events. scheduling ${validEvents.length} future events.`);
@@ -801,7 +808,7 @@ export default function UploadScreen() {
                     console.log(`Scheduling ${med.name}: every ${intervalHours}h for ${durationDays} days`);
 
                     const eventTimes: number[] = [];
-                    // Start at 00:00 (Midnight)
+                    // Build daily time slots based on frequency
                     let currentHour = 0;
                     while (currentHour < 24) {
                         eventTimes.push(currentHour);
@@ -810,14 +817,16 @@ export default function UploadScreen() {
 
                     console.log(`Daily times: ${eventTimes.map(h => `${h}:00`).join(', ')}`);
 
-                    // Create events for duration_days, starting from Tomorrow
+                    // Create events for duration_days, starting from startDateTime (today at next half-hour)
                     for (let day = 0; day < durationDays; day++) {
-                        const eventDate = new Date(tomorrow);
+                        const eventDate = new Date(startDateTime);
                         eventDate.setDate(eventDate.getDate() + day);
 
                         for (const hour of eventTimes) {
                             const eventDateTime = new Date(eventDate);
                             eventDateTime.setHours(hour, 0, 0, 0);
+                            // Skip events before the start time (relevant for day 0)
+                            if (eventDateTime < startDateTime) continue;
                             calendarEvents.push({
                                 user_id: userId,
                                 document_id: documentId,
@@ -950,10 +959,10 @@ export default function UploadScreen() {
                 {step === 'select' && (
                     <>
                         <Text variant="bodyLarge" style={[styles.instruction, { color: theme.colors.onSurfaceVariant }]}>
-                            Upload a photo of your medication, health metric, or medical document.
+                            Upload a photo of your medication, health metric, body condition, or medical document.
                         </Text>
                         <View style={styles.uploadOptions}>
-                            <Card style={styles.uploadCard} mode="outlined" onPress={() => pickImage('camera')}>
+                            <Card style={[styles.uploadCard, { borderWidth: 0, elevation: 0 }]} mode="contained" onPress={() => pickImage('camera')}>
                                 <Card.Content style={styles.uploadCardContent}>
                                     <View style={[styles.uploadIcon, { backgroundColor: theme.colors.primaryContainer }]}>
                                         <MaterialCommunityIcons name="camera" size={32} color={theme.colors.primary} />
@@ -962,7 +971,7 @@ export default function UploadScreen() {
                                     <Text variant="bodySmall" style={{ color: theme.colors.onSurfaceVariant }}>Use your camera</Text>
                                 </Card.Content>
                             </Card>
-                            <Card style={styles.uploadCard} mode="outlined" onPress={() => pickImage('library')}>
+                            <Card style={[styles.uploadCard, { borderWidth: 0, elevation: 0 }]} mode="contained" onPress={() => pickImage('library')}>
                                 <Card.Content style={styles.uploadCardContent}>
                                     <View style={[styles.uploadIcon, { backgroundColor: theme.colors.secondaryContainer }]}>
                                         <MaterialCommunityIcons name="image" size={32} color={theme.colors.secondary} />

@@ -210,11 +210,6 @@ export default function BodyConditionsScreen() {
                 <Text variant="headlineSmall" style={{ color: theme.colors.onBackground, fontWeight: '600', flex: 1 }}>
                     Body Conditions
                 </Text>
-                <IconButton
-                    icon="calendar"
-                    size={24}
-                    onPress={() => router.push('/(tabs)/calendar')}
-                />
             </View>
 
             <ScrollView
@@ -242,9 +237,6 @@ export default function BodyConditionsScreen() {
                     <>
                         {labelGroups.length > 0 && (
                             <View style={styles.section}>
-                                <Text variant="titleMedium" style={[styles.sectionTitle, { color: theme.colors.onBackground }]}>
-                                    Conditions ({labelGroups.length} {labelGroups.length === 1 ? 'label' : 'labels'})
-                                </Text>
                                 {labelGroups.map((group) => {
                                     const statusColors = getStatusColor(group.latestCondition.progression_status, theme);
                                     return (

@@ -54,6 +54,9 @@ function AuthProvider({ children }: { children: React.ReactNode }) {
 import { GestureHandlerRootView } from 'react-native-gesture-handler';
 
 export default function RootLayout() {
+    const segments = useSegments();
+    const hideFooter = segments[0] === '(auth)';
+
     return (
         <QueryClientProvider client={queryClient}>
             <SafeAreaProvider>
@@ -67,7 +70,7 @@ export default function RootLayout() {
                                     <Stack.Screen name="documents" options={{ headerShown: false }} />
                                     <Stack.Screen name="chat" options={{ headerShown: false }} />
                                 </Stack>
-                                <AppFooter />
+                                {!hideFooter && <AppFooter />}
                             </View>
                         </AuthProvider>
                     </PaperProvider>

@@ -8,11 +8,11 @@ import {
     generateEmbedding,
 } from '../_shared/utils.ts';
 
-const SYSTEM_INSTRUCTION = `You are a helpful health assistant. You have access to the user's medical data (medications, metrics, documents) provided in the context.
+const SYSTEM_INSTRUCTION = `You are a helpful health assistant. You have access to the user's complete health data including medications, health metrics, body conditions, bodily excretions, todo items, calendar events, and uploaded documents.
 RULES FOR USING CONTEXT:
-1. **RELEVANCE IS KEY**: ONLY reference the user's medical data if the user's question is related to their health, medications, or documents.
-2. **GREETINGS**: If the user asks a general question or greeting (e.g., "Hi", "How are you?"), respond socially, briefly, and politely WITHOUT mentioning their medical data unless they ask for a summary.
-3. **UNKNOWN INFO**: If the user asks about a specific condition/medication NOT in the context, state clearly that you don't have that information in their records.
+1. **RELEVANCE IS KEY**: ONLY reference the user's data if their question is related to their health, medications, conditions, schedule, or documents.
+2. **GREETINGS**: If the user asks a general question or greeting (e.g., "Hi", "How are you?"), respond socially, briefly, and politely WITHOUT mentioning their data unless they ask for a summary.
+3. **UNKNOWN INFO**: If the user asks about something NOT in the context, state clearly that you don't have that information in their records.
 4. **NO DIAGNOSES**: Never provide medical diagnoses. Recommend consulting a doctor.
 
 RESPONSE STYLE:
@@ -151,7 +151,51 @@ serve(async (req) => {
             console.log('Metric types:', [...new Set(healthMetrics.map(m => m.metric_type))]);
         }
 
-        // Step 4: Vector similarity search for relevant documents (using service client)
+        // Step 4: Fetch user's body conditions
+        console.log('Fetching user body conditions...');
+        const { data: bodyConditions, error: conditionsError } = await serviceClient
+            .from('body_conditions')
+            .select('condition_type, severity, observed_at, notes')
+            .eq('user_id', user.id)
+            .order('observed_at', { ascending: false })
+            .limit(20);
+
+        console.log('Body conditions found:', bodyConditions?.length || 0, conditionsError ? `Error: ${conditionsError.message}` : '');
+
+        // Step 5: Fetch user's bodily excretions
+        console.log('Fetching user bodily excretions...');
+        const { data: excretions, error: excretionsError } = await serviceClient
+            .from('bodily_excretions')
+            .select('excretion_type, color, consistency, observed_at, notes')
+            .eq('user_id', user.id)
+            .order('observed_at', { ascending: false })
+            .limit(20);
+
+        console.log('Bodily excretions found:', excretions?.length || 0, excretionsError ? `Error: ${excretionsError.message}` : '');
+
+        // Step 6: Fetch user's todo items
+        console.log('Fetching user todo items...');
+        const { data: todoItems, error: todosError } = await serviceClient
+            .from('todo_items')
+            .select('title, description, due_date, is_completed, priority')
+            .eq('user_id', user.id)
+            .limit(20);
+
+        console.log('Todo items found:', todoItems?.length || 0, todosError ? `Error: ${todosError.message}` : '');
+
+        // Step 7: Fetch user's upcoming calendar events
+        console.log('Fetching user calendar events...');
+        const { data: calendarEvents, error: eventsError } = await serviceClient
+            .from('calendar_events')
+            .select('title, type, scheduled_at, notes')
+            .eq('user_id', user.id)
+            .gte('scheduled_at', new Date().toISOString())
+            .order('scheduled_at', { ascending: true })
+            .limit(30);
+
+        console.log('Calendar events found:', calendarEvents?.length || 0, eventsError ? `Error: ${eventsError.message}` : '');
+
+        // Step 8: Vector similarity search for relevant documents (using service client)
         console.log('Searching for relevant documents for user:', user.id);
         const { data: relevantDocs, error: searchError } = await serviceClient.rpc(
             'match_documents',
@@ -214,6 +258,64 @@ serve(async (req) => {
             sources.push(`${healthMetrics.length} health metric(s) on file`);
         } else {
             context += '=== USER\'S HEALTH METRICS ===\nNo health metrics currently on file.\n\n';
+        }
+
+        // Add body conditions to context
+        if (bodyConditions && bodyConditions.length > 0) {
+            context += '=== USER\'S BODY CONDITIONS ===\n';
+            for (const condition of bodyConditions) {
+                context += `- ${condition.condition_type}`;
+                if (condition.severity) context += ` (severity: ${condition.severity})`;
+                context += `, observed: ${condition.observed_at}`;
+                if (condition.notes) context += `, notes: ${condition.notes}`;
+                context += '\n';
+            }
+            context += '\n';
+            sources.push(`${bodyConditions.length} body condition(s) on file`);
+        }
+
+        // Add bodily excretions to context
+        if (excretions && excretions.length > 0) {
+            context += '=== USER\'S BODILY EXCRETIONS ===\n';
+            for (const excretion of excretions) {
+                context += `- ${excretion.excretion_type}`;
+                if (excretion.color) context += `, color: ${excretion.color}`;
+                if (excretion.consistency) context += `, consistency: ${excretion.consistency}`;
+                context += `, observed: ${excretion.observed_at}`;
+                if (excretion.notes) context += `, notes: ${excretion.notes}`;
+                context += '\n';
+            }
+            context += '\n';
+            sources.push(`${excretions.length} excretion record(s) on file`);
+        }
+
+        // Add todo items to context
+        if (todoItems && todoItems.length > 0) {
+            context += '=== USER\'S TODO ITEMS ===\n';
+            for (const todo of todoItems) {
+                context += `- ${todo.title}`;
+                if (todo.is_completed) context += ' [COMPLETED]';
+                if (todo.priority) context += ` (priority: ${todo.priority})`;
+                if (todo.due_date) context += `, due: ${todo.due_date}`;
+                if (todo.description) context += `, description: ${todo.description}`;
+                context += '\n';
+            }
+            context += '\n';
+            sources.push(`${todoItems.length} todo item(s) on file`);
+        }
+
+        // Add calendar events to context
+        if (calendarEvents && calendarEvents.length > 0) {
+            context += '=== USER\'S UPCOMING CALENDAR EVENTS ===\n';
+            for (const event of calendarEvents) {
+                context += `- ${event.title}`;
+                if (event.type) context += ` (${event.type})`;
+                context += `, scheduled: ${event.scheduled_at}`;
+                if (event.notes) context += `, notes: ${event.notes}`;
+                context += '\n';
+            }
+            context += '\n';
+            sources.push(`${calendarEvents.length} upcoming event(s) on file`);
         }
 
         // Add relevant documents to context

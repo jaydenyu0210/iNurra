@@ -1,8 +1,9 @@
-import { useState, useEffect, useRef, useCallback } from 'react';
-import { View, StyleSheet, ScrollView, Dimensions, Alert, TouchableOpacity } from 'react-native';
+import { useState, useEffect, useRef, useCallback, useMemo } from 'react';
+import { View, StyleSheet, ScrollView, Dimensions, Alert, TouchableOpacity, PanResponder, Animated, InteractionManager } from 'react-native';
 import { Text, Card, Button, SegmentedButtons, useTheme, IconButton, Chip, ActivityIndicator, Portal, Dialog, TextInput } from 'react-native-paper';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { useRouter, useLocalSearchParams } from 'expo-router';
+import { useFocusEffect } from '@react-navigation/native';
 import { Calendar as RNCalendar, DateData } from 'react-native-calendars';
 import { MaterialCommunityIcons } from '@expo/vector-icons';
 import { format, parseISO, isSameDay, startOfWeek, addDays } from 'date-fns';
@@ -38,7 +39,7 @@ export default function CalendarScreen() {
     const scrollViewRef = useRef<ScrollView>(null);
 
     const [selectedDate, setSelectedDate] = useState(format(new Date(), 'yyyy-MM-dd'));
-    const [viewMode, setViewMode] = useState<ViewMode>((initialViewMode as ViewMode) || 'day');
+    const [viewMode, setViewMode] = useState<ViewMode>((initialViewMode as ViewMode) || 'month');
 
     // Update view mode if params change (forcing tab switch)
     useEffect(() => {
@@ -57,6 +58,19 @@ export default function CalendarScreen() {
     const [editTodoFrequency, setEditTodoFrequency] = useState<string | undefined>(undefined);
     const [editTodoDuration, setEditTodoDuration] = useState<string | undefined>(undefined);
     const [editDialogVisible, setEditDialogVisible] = useState(false);
+
+    // Drag state for medication events (day view only)
+    const [isDragging, setIsDragging] = useState(false);
+
+    // Helper: snap Y position to half-hour intervals and return { hour, minutes }
+    const snapToHalfHour = (yPosition: number): { hour: number; minutes: number } => {
+        const totalMinutes = (yPosition / HOUR_HEIGHT) * 60;
+        const hour = Math.floor(totalMinutes / 60);
+        const minuteInHour = totalMinutes % 60;
+        // Snap to :00 or :30
+        const minutes = minuteInHour < 30 ? 0 : 30;
+        return { hour: Math.max(0, Math.min(23, hour)), minutes };
+    };
 
     // Fetch events (from calendar_events table + generate from medications)
     const fetchEvents = useCallback(async () => {
@@ -158,7 +172,7 @@ export default function CalendarScreen() {
 
                         medicationEvents.push({
                             id: `virtual-${med.id}-${eventDateTime.getTime()}`,
-                            title: `💊 ${med.name} ${med.dosage || ''}`.trim(),
+                            title: `💊 ${med.name}`,
                             description: `Take medication - Every ${med.frequency} hours`,
                             type: 'medication',
                             scheduled_at: eventDateTime.toISOString(),
@@ -196,16 +210,31 @@ export default function CalendarScreen() {
         return () => clearInterval(interval);
     }, []);
 
-    // Scroll to current time on mount
+    // Scroll to current time when switching to day view
     useEffect(() => {
         if (viewMode === 'day' && scrollViewRef.current) {
             const hour = new Date().getHours();
-            const scrollY = Math.max(0, (hour - 2) * HOUR_HEIGHT);
+            const scrollY = Math.max(0, (hour - 1) * HOUR_HEIGHT); // Show 1 hour before current time
             setTimeout(() => {
                 scrollViewRef.current?.scrollTo({ y: scrollY, animated: true });
-            }, 300);
+            }, 100);
         }
     }, [viewMode]);
+
+    // Scroll to current time when screen comes into focus (from home/medication page)
+    useFocusEffect(
+        useCallback(() => {
+            // Wait for animations/transitions to complete before scrolling
+            const task = InteractionManager.runAfterInteractions(() => {
+                if (viewMode === 'day' && scrollViewRef.current) {
+                    const hour = new Date().getHours();
+                    const scrollY = Math.max(0, (hour - 1) * HOUR_HEIGHT);
+                    scrollViewRef.current?.scrollTo({ y: scrollY, animated: false });
+                }
+            });
+            return () => task.cancel();
+        }, [viewMode])
+    );
 
     const getEventColor = (type: string) => {
         switch (type) {
@@ -428,6 +457,96 @@ export default function CalendarScreen() {
         }
     };
 
+    // Handle medication dose drag-and-drop (day view only)
+    const handleMedicationDrop = (event: AppCalendarEvent, newYPosition: number) => {
+        if (!supabase || !user?.id || !event.medication_id) return;
+
+        // 1. Snap to half-hour
+        const { hour, minutes } = snapToHalfHour(newYPosition);
+        const originalTime = parseISO(event.scheduled_at);
+        
+        // Create new time on the same date as the dragged event
+        const newTime = new Date(originalTime);
+        newTime.setHours(hour, minutes, 0, 0);
+
+        // 2. Calculate time delta (shift amount in milliseconds)
+        const timeDelta = newTime.getTime() - originalTime.getTime();
+        
+        // Skip if no actual change
+        if (timeDelta === 0) return;
+
+        console.log(`[Drag] Moving dose from ${format(originalTime, 'HH:mm')} to ${format(newTime, 'HH:mm')} (delta: ${timeDelta / 60000} min)`);
+
+        // 3. OPTIMISTIC UI UPDATE: Immediately update local state
+        const updatedEvents = events.map(e => {
+            // Only shift events for this medication that are >= the dragged event's original time
+            if (e.medication_id === event.medication_id) {
+                const eventTime = new Date(e.scheduled_at);
+                if (eventTime >= originalTime) {
+                    const shiftedTime = new Date(eventTime.getTime() + timeDelta);
+                    return { ...e, scheduled_at: shiftedTime.toISOString() };
+                }
+            }
+            return e;
+        });
+        setEvents(updatedEvents); // Instant UI update!
+
+        // 4. BACKGROUND DB SYNC: Update database without blocking UI
+        (async () => {
+            try {
+                // Get all calendar events for this medication >= original time
+                const { data: dbEvents, error: eventsError } = await supabase
+                    .from('calendar_events')
+                    .select('id, scheduled_at')
+                    .eq('medication_id', event.medication_id)
+                    .gte('scheduled_at', originalTime.toISOString())
+                    .order('scheduled_at', { ascending: true });
+
+                if (eventsError || !dbEvents) {
+                    console.error('Failed to fetch medication events:', eventsError);
+                    fetchEvents(); // Revert to DB state on error
+                    return;
+                }
+
+                // Build updates using TIME DELTA (not frequency recalculation)
+                const updates = dbEvents.map(ev => ({
+                    id: ev.id,
+                    scheduled_at: new Date(new Date(ev.scheduled_at).getTime() + timeDelta).toISOString()
+                }));
+
+                console.log(`[Drag] Updating ${updates.length} events in DB`);
+
+                // Batch update: update all events
+                for (const update of updates) {
+                    await supabase
+                        .from('calendar_events')
+                        .update({ scheduled_at: update.scheduled_at } as any)
+                        .eq('id', update.id);
+                }
+
+                // Update medications.schedule column with full schedule
+                const { data: allEvents } = await supabase
+                    .from('calendar_events')
+                    .select('scheduled_at')
+                    .eq('medication_id', event.medication_id)
+                    .order('scheduled_at', { ascending: true });
+
+                const fullSchedule = (allEvents || []).map(e => e.scheduled_at);
+
+                await supabase
+                    .from('medications')
+                    .update({ schedule: fullSchedule } as any)
+                    .eq('id', event.medication_id);
+
+                console.log(`[Drag] DB sync complete. Schedule has ${fullSchedule.length} timestamps`);
+
+            } catch (error) {
+                console.error('Error syncing to database:', error);
+                fetchEvents(); // Revert to DB state on error
+            }
+        })();
+    };
+
     const getEventsForDate = (date: string): AppCalendarEvent[] => {
         return events.filter(event => {
             const eventDate = format(parseISO(event.scheduled_at), 'yyyy-MM-dd');
@@ -450,6 +569,176 @@ export default function CalendarScreen() {
         return (hours + minutes / 60) * HOUR_HEIGHT;
     };
 
+    // Draggable Medication Card Component (day view only) - uses React Native PanResponder
+    // Edit mode activated by pencil icon, exit on drag complete or X icon press
+    const DraggableMedicationCard = ({ 
+        event, 
+        initialTop, 
+        leftOffset, 
+        eventWidth, 
+        eventHeight 
+    }: { 
+        event: AppCalendarEvent; 
+        initialTop: number; 
+        leftOffset: number; 
+        eventWidth: number; 
+        eventHeight: number;
+    }) => {
+        const pan = useRef(new Animated.Value(0)).current;
+        const [isEditMode, setIsEditMode] = useState(false);
+        const [isDraggingCard, setIsDraggingCard] = useState(false);
+        
+        // Use ref to avoid stale closure issues in panResponder
+        const isEditModeRef = useRef(isEditMode);
+        isEditModeRef.current = isEditMode;
+
+        // Extract medication name without dosage (format: "💊 MedName" or "💊 MedName 500mg")
+        const getMedicationName = (title: string) => {
+            // Remove emoji and get the name part (first word after emoji)
+            const parts = title.replace('💊', '').trim().split(' ');
+            return `💊 ${parts[0]}`;
+        };
+
+        // Enter edit mode - only disable scroll when actually dragging
+        const enterEditMode = () => {
+            setIsEditMode(true);
+        };
+
+        // Exit edit mode
+        const exitEditMode = useCallback(() => {
+            setIsEditMode(false);
+            setIsDraggingCard(false);
+            setIsDragging(false);
+            pan.setValue(0);
+        }, [pan]);
+
+        const panResponder = useMemo(() => PanResponder.create({
+            onStartShouldSetPanResponder: () => isEditModeRef.current && !event.completed,
+            onMoveShouldSetPanResponder: (_, gestureState) => {
+                // Only allow drag if in edit mode and moved enough
+                return isEditModeRef.current && !event.completed && (Math.abs(gestureState.dy) > 5 || Math.abs(gestureState.dx) > 5);
+            },
+            onPanResponderGrant: () => {
+                if (!isEditModeRef.current) return;
+                setIsDraggingCard(true);
+                setIsDragging(true); // Disable scroll only when drag starts
+                pan.setOffset((pan as any)._value || 0);
+                pan.setValue(0);
+            },
+            onPanResponderMove: (_, gestureState) => {
+                if (isEditModeRef.current) {
+                    pan.setValue(gestureState.dy);
+                }
+            },
+            onPanResponderRelease: (_, gestureState) => {
+                pan.flattenOffset();
+                setIsDragging(false); // Re-enable scroll
+                
+                // If minimal movement, don't treat as drag
+                if (Math.abs(gestureState.dx) < 5 && Math.abs(gestureState.dy) < 5) {
+                    setIsDraggingCard(false);
+                    pan.setValue(0);
+                    return;
+                }
+                
+                // Handle the drop
+                const newY = initialTop + gestureState.dy;
+                handleMedicationDrop(event, newY);
+                
+                // Reset position and exit edit mode
+                Animated.spring(pan, {
+                    toValue: 0,
+                    useNativeDriver: false,
+                }).start();
+                setIsEditMode(false);
+                setIsDraggingCard(false);
+                setIsDragging(false);
+            },
+            onPanResponderTerminate: () => {
+                setIsDraggingCard(false);
+                setIsDragging(false);
+                pan.setValue(0);
+            },
+        }), [event, initialTop, pan]);
+
+        const eventColor = getEventColor(event.type);
+        
+        return (
+            <Animated.View
+                {...panResponder.panHandlers}
+                style={[
+                    styles.eventCard,
+                    {
+                        top: initialTop,
+                        left: leftOffset,
+                        width: eventWidth - 4,
+                        height: eventHeight,
+                        backgroundColor: isEditMode ? eventColor + '30' : eventColor + '20',
+                        // Normal: solid left border; Edit: dashed all-around border
+                        borderLeftColor: isEditMode ? eventColor : eventColor,
+                        borderLeftWidth: isEditMode ? 2 : 3,
+                        borderRightWidth: isEditMode ? 2 : 0,
+                        borderTopWidth: isEditMode ? 2 : 0,
+                        borderBottomWidth: isEditMode ? 2 : 0,
+                        borderRightColor: eventColor,
+                        borderTopColor: eventColor,
+                        borderBottomColor: eventColor,
+                        borderStyle: isEditMode ? 'dashed' : 'solid',
+                        borderRadius: tokens.radius.sm,
+                        transform: [{ translateY: pan }],
+                        zIndex: isEditMode ? 100 : 1,
+                        elevation: isEditMode ? 10 : 2,
+                        opacity: event.completed ? 0.6 : 1,
+                    },
+                ]}
+            >
+                <View style={[
+                    styles.eventCardContent, 
+                    { 
+                        flexDirection: 'row',
+                        alignItems: 'center',
+                        justifyContent: 'space-between',
+                        paddingHorizontal: 4,
+                        paddingVertical: 2,
+                    }
+                ]}>
+                    <TouchableOpacity 
+                        style={{ flex: 1, marginRight: 4 }} 
+                        onPress={() => !isEditMode && handleEventPress(event)}
+                        disabled={isEditMode}
+                    >
+                        <Text
+                            variant="labelSmall"
+                            style={[
+                                { color: theme.colors.onSurface, fontSize: 11 },
+                                event.completed && styles.completedText,
+                            ]}
+                            numberOfLines={1}
+                            ellipsizeMode="tail"
+                        >
+                            {getMedicationName(event.title)}
+                        </Text>
+                    </TouchableOpacity>
+                    
+                    {/* Edit/Close icon */}
+                    {!event.completed && (
+                        <TouchableOpacity
+                            onPress={() => isEditMode ? exitEditMode() : enterEditMode()}
+                            hitSlop={{ top: 6, bottom: 6, left: 6, right: 6 }}
+                            style={{ padding: 1 }}
+                        >
+                            <MaterialCommunityIcons
+                                name={isEditMode ? 'close' : 'pencil'}
+                                size={12}
+                                color={isEditMode ? theme.colors.error : theme.colors.onSurfaceVariant}
+                            />
+                        </TouchableOpacity>
+                    )}
+                </View>
+            </Animated.View>
+        );
+    };
+
     // Day View Component
     const renderDayView = () => {
         const dayEvents = getEventsForDate(selectedDate);
@@ -460,8 +749,9 @@ export default function CalendarScreen() {
                 ref={scrollViewRef}
                 style={styles.dayScrollView}
                 showsVerticalScrollIndicator={false}
+                scrollEnabled={!isDragging}
             >
-                <View style={styles.dayGrid}>
+                    <View style={styles.dayGrid}>
                     {HOURS.map((hour) => (
                         <View key={hour} style={[styles.hourRow, { borderBottomColor: theme.colors.outlineVariant }]}>
                             <Text variant="labelSmall" style={[styles.hourLabel, { color: theme.colors.onSurfaceVariant }]}>
@@ -510,13 +800,33 @@ export default function CalendarScreen() {
                             const hour = eventTime.getHours();
                             const minutes = eventTime.getMinutes();
                             const top = (hour + minutes / 60) * HOUR_HEIGHT;
-                            const eventHeight = Math.max(40, (event.duration_minutes || 30) * (HOUR_HEIGHT / 60));
+                            
+                            // Reduced height for medications to fit half-hour slots
+                            const isMedication = event.type === 'medication';
+                            const eventHeight = isMedication 
+                                ? HOUR_HEIGHT / 2 - 4 // 26px for half-hour slots
+                                : Math.max(40, (event.duration_minutes || 30) * (HOUR_HEIGHT / 60));
 
                             const { column, totalColumns } = eventPositions[event.id];
                             const availableWidth = width - 55 - 16; // Total width minus left margin and right padding
                             const eventWidth = availableWidth / totalColumns;
                             const leftOffset = 55 + (column * eventWidth);
 
+                            // Use draggable card for medication events
+                            if (isMedication) {
+                                return (
+                                    <DraggableMedicationCard
+                                        key={event.id}
+                                        event={event}
+                                        initialTop={top}
+                                        leftOffset={leftOffset}
+                                        eventWidth={eventWidth}
+                                        eventHeight={eventHeight}
+                                    />
+                                );
+                            }
+
+                            // Regular card for non-medication events
                             return (
                                 <Card
                                     key={event.id}
@@ -737,14 +1047,14 @@ export default function CalendarScreen() {
                                             <View style={{ flexDirection: 'column', gap: 2 }}>
                                                 {medCount > 0 && (
                                                     <View style={{ flexDirection: 'row', alignItems: 'center', gap: 2 }}>
-                                                        <MaterialCommunityIcons name="pill" size={10} color={theme.colors.primary} />
-                                                        <Text style={{ fontSize: 9, color: theme.colors.primary }}>x {medCount}</Text>
+                                                        <MaterialCommunityIcons name="pill" size={12} color={theme.colors.primary} />
+                                                        <Text style={{ fontSize: 11, fontWeight: '600', color: theme.colors.primary }}>x {medCount}</Text>
                                                     </View>
                                                 )}
                                                 {todoCount > 0 && (
                                                     <View style={{ flexDirection: 'row', alignItems: 'center', gap: 2 }}>
-                                                        <MaterialCommunityIcons name="checkbox-marked-circle-outline" size={10} color={theme.colors.secondary} />
-                                                        <Text style={{ fontSize: 9, color: theme.colors.secondary }}>x {todoCount}</Text>
+                                                        <MaterialCommunityIcons name="checkbox-marked-circle-outline" size={12} color={theme.colors.secondary} />
+                                                        <Text style={{ fontSize: 11, fontWeight: '600', color: theme.colors.secondary }}>x {todoCount}</Text>
                                                     </View>
                                                 )}
                                             </View>
@@ -991,8 +1301,8 @@ const styles = StyleSheet.create({
         width: '100%',
     },
     dayNumber: {
-        fontSize: 12,
-        fontWeight: '600',
+        fontSize: 14,
+        fontWeight: '700',
         marginBottom: 4,
         textAlign: 'center',
         width: '100%',
