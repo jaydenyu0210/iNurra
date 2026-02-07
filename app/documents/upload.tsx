@@ -1,8 +1,8 @@
 import { useState, useCallback, useEffect, useRef } from 'react';
-import { View, StyleSheet, Image, ScrollView, KeyboardAvoidingView, Platform } from 'react-native';
+import { View, StyleSheet, Image, ScrollView, KeyboardAvoidingView, Platform, DeviceEventEmitter, Keyboard } from 'react-native';
 import { Text, Card, Button, useTheme, IconButton, ActivityIndicator, ProgressBar, RadioButton, TextInput, HelperText, Portal, Dialog, Chip } from 'react-native-paper';
 import { SafeAreaView } from 'react-native-safe-area-context';
-import { useRouter, Stack } from 'expo-router';
+import { useRouter, Stack, useFocusEffect } from 'expo-router';
 import { MaterialCommunityIcons } from '@expo/vector-icons';
 import * as ImagePicker from 'expo-image-picker';
 import { Audio } from 'expo-av';
@@ -43,8 +43,15 @@ export default function UploadScreen() {
     } | null>(null);
     const [step, setStep] = useState<'select' | 'camera' | 'describe' | 'uploading' | 'summary' | 'review' | 'success'>('select');
 
+
+
     // UI State for Modals
-    const [editingItem, setEditingItem] = useState<{ type: 'medication' | 'metric' | 'body_condition' | 'bodily_excretion' | 'todo', index: number } | null>(null);
+    const [editingItem, setEditingItem] = useState<{ type: 'medication' | 'metric' | 'body_condition' | 'bodily_excretion' | 'todo' | 'document_summary', index: number } | null>(null);
+
+    const handleEditItem = (item: { type: 'medication' | 'metric' | 'body_condition' | 'bodily_excretion' | 'todo' | 'document_summary', index: number } | null) => {
+        stopSpeaking();
+        setEditingItem(item);
+    };
 
     // Description State
     const [userDescription, setUserDescription] = useState('');
@@ -62,18 +69,50 @@ export default function UploadScreen() {
     // Note: The previous view showed them missing in the snippet but they exist in the full file usually. 
     // I'll be safe and add the new ones here.
     const [selectedMetricIndex, setSelectedMetricIndex] = useState<number | null>(null); // For metric details modal
-    const [isSpeaking, setIsSpeaking] = useState(false); // TTS state
+
+    const handleSelectMetric = (index: number | null) => {
+        stopSpeaking();
+        setSelectedMetricIndex(index);
+    };
+    const [speakingItemId, setSpeakingItemId] = useState<string | null>(null); // TTS state
 
     // Body Conditions Review State
     const [reviewBodyConditions, setReviewBodyConditions] = useState<any[]>([]);
     const [reviewBodilyExcretions, setReviewBodilyExcretions] = useState<any[]>([]);
     const [reviewTodos, setReviewTodos] = useState<any[]>([]);
 
+    // Todo Editing State
+    const [editTodoTitle, setEditTodoTitle] = useState('');
+    const [editTodoDescription, setEditTodoDescription] = useState('');
+    const [editTodoFrequency, setEditTodoFrequency] = useState('');
+    const [editTodoDuration, setEditTodoDuration] = useState('');
+    const [isKeyboardVisible, setKeyboardVisible] = useState(false);
+
+    useEffect(() => {
+        const keyboardDidShowListener = Keyboard.addListener(
+            'keyboardDidShow',
+            () => {
+                setKeyboardVisible(true);
+            }
+        );
+        const keyboardDidHideListener = Keyboard.addListener(
+            'keyboardDidHide',
+            () => {
+                setKeyboardVisible(false);
+            }
+        );
+
+        return () => {
+            keyboardDidHideListener.remove();
+            keyboardDidShowListener.remove();
+        };
+    }, []);
+
     const [isSaving, setIsSaving] = useState(false);
     const currentSoundRef = useRef<any>(null);
 
     // Stop any playing audio
-    const stopSpeaking = async () => {
+    const stopSpeaking = useCallback(async () => {
         if (currentSoundRef.current) {
             try {
                 await currentSoundRef.current.stopAsync();
@@ -83,8 +122,27 @@ export default function UploadScreen() {
             }
             currentSoundRef.current = null;
         }
-        setIsSpeaking(false);
-    };
+        setSpeakingItemId(null);
+    }, []);
+
+    // Stop speaking when screen loses focus (e.g. clicking "Ask AI" or navigating away)
+    useFocusEffect(
+        useCallback(() => {
+            return () => {
+                stopSpeaking();
+            };
+        }, [stopSpeaking])
+    );
+
+    // Listen for global stop speaking events (e.g. from footer)
+    useEffect(() => {
+        const subscription = DeviceEventEmitter.addListener('STOP_SPEAKING', () => {
+            stopSpeaking();
+        });
+        return () => {
+            subscription.remove();
+        };
+    }, [stopSpeaking]);
 
     // Auto-trigger upload when step changes to 'uploading'
     useEffect(() => {
@@ -94,6 +152,7 @@ export default function UploadScreen() {
     }, [step, image]);
 
     const pickImage = useCallback(async (source: 'camera' | 'library') => {
+        await stopSpeaking();
         try {
             let result;
 
@@ -132,63 +191,25 @@ export default function UploadScreen() {
     }, []);
 
     // TTS for metrics
-    const speakMetricDetails = async (metric: any) => {
-        if (isSpeaking) {
-            await stopSpeaking();
-            return;
-        }
+    // TTS for metrics - Modified to use speakText
+    const speakMetricDetails = async (metric: any, id: string) => {
+        // Calculate status string
+        const rangeStatus = calculateRangeStatus(parseFloat(metric.value), metric.normalRangeLower, metric.normalRangeUpper);
+        let statusText = '';
+        if (rangeStatus === 'normal') statusText = 'is within normal range';
+        if (rangeStatus === 'high') statusText = 'is higher than normal';
+        if (rangeStatus === 'low') statusText = 'is lower than normal';
 
-        try {
-            await stopSpeaking();
-            setIsSpeaking(true);
+        const textToSpeak = [
+            `Metric: ${metric.name}`,
+            `Value: ${metric.value} ${metric.unit}`,
+            statusText,
+            metric.summary ? `Summary: ${metric.summary}` : ''
+        ].filter(Boolean).join('. ');
 
-            // Set audio mode for playback (not recording)
-            await Audio.setAudioModeAsync({
-                allowsRecordingIOS: false,
-                playsInSilentModeIOS: true,
-            });
-
-            // Calculate status string
-            const rangeStatus = calculateRangeStatus(parseFloat(metric.value), metric.normalRangeLower, metric.normalRangeUpper);
-            let statusText = '';
-            if (rangeStatus === 'normal') statusText = 'is within normal range';
-            if (rangeStatus === 'high') statusText = 'is higher than normal';
-            if (rangeStatus === 'low') statusText = 'is lower than normal';
-
-            const textToSpeak = [
-                `Name: ${metric.name}`,
-                `Measured value: ${metric.value} ${metric.unit}`,
-                metric.measurementPrecautions ? `Measurement Precautions: ${metric.measurementPrecautions}` : '',
-                metric.monitoringGuidance ? `Monitoring Guidance: ${metric.monitoringGuidance}` : '',
-                (metric.normalRangeLower || metric.normalRangeUpper) ? `Normal Range: ${metric.normalRangeLower || '?'} to ${metric.normalRangeUpper || '?'}` : '',
-                statusText ? `Range Status: ${statusText}` : ''
-            ].filter(Boolean).join('. ');
-
-            console.log('Speaking metric:', textToSpeak.substring(0, 100) + '...');
-
-            const { audioContent } = await generateSpeech(textToSpeak);
-            console.log('Got audio content, length:', audioContent?.length);
-
-            const { sound } = await Audio.Sound.createAsync(
-                { uri: `data:audio/mp3;base64,${audioContent}` },
-                { shouldPlay: true }
-            );
-
-            currentSoundRef.current = sound;
-
-            sound.setOnPlaybackStatusUpdate((status) => {
-                if (status.isLoaded && status.didJustFinish) {
-                    currentSoundRef.current = null;
-                    setIsSpeaking(false);
-                    sound.unloadAsync();
-                }
-            });
-        } catch (error) {
-            console.error('TTS Error:', error);
-            setIsSpeaking(false);
-            alert('Failed to play audio: ' + (error as Error).message);
-        }
+        speakText(textToSpeak, id);
     };
+
 
     const calculateRangeStatus = (value: number, lower: number | null, upper: number | null) => {
         if (typeof value !== 'number' || isNaN(value)) return null;
@@ -202,6 +223,7 @@ export default function UploadScreen() {
 
     // Audio Recording Functions
     async function startRecording() {
+        await stopSpeaking();
         try {
             console.log('Requesting permissions..');
             const permission = await Audio.requestPermissionsAsync();
@@ -307,6 +329,13 @@ export default function UploadScreen() {
                 result.extractedData?.medications ||
                 result.medications ||
                 [];
+            if (result.extractedData?.todos) {
+                setReviewTodos(result.extractedData.todos.map((t: any) => ({
+                    ...t,
+                    frequencyDays: t.frequencyDays || null,
+                    durationDays: 120 // Default to 120 days as requested
+                })));
+            }
             const docType =
                 result.extractedData?.documentType ||
                 result.extractedData?.type ||
@@ -458,6 +487,7 @@ export default function UploadScreen() {
     };
 
     const handleAddMed = () => {
+        stopSpeaking();
         setReviewMeds([...reviewMeds, {
             name: '',
             dosage: '',
@@ -471,6 +501,7 @@ export default function UploadScreen() {
     };
 
     const handleRemoveMed = (index: number) => {
+        stopSpeaking();
         const updated = [...reviewMeds];
         updated.splice(index, 1);
         setReviewMeds(updated);
@@ -484,10 +515,12 @@ export default function UploadScreen() {
     };
 
     const handleAddMetric = () => {
+        stopSpeaking();
         setReviewMetrics([...reviewMetrics, { name: '', value: '', unit: '', recordedAt: new Date().toISOString() }]);
     };
 
     const handleRemoveMetric = (index: number) => {
+        stopSpeaking();
         const updated = [...reviewMetrics];
         updated.splice(index, 1);
         setReviewMetrics(updated);
@@ -506,6 +539,7 @@ export default function UploadScreen() {
     };
 
     const handleAddTodo = () => {
+        stopSpeaking();
         setReviewTodos([...reviewTodos, {
             title: '',
             description: '',
@@ -515,12 +549,14 @@ export default function UploadScreen() {
     };
 
     const handleRemoveTodo = (index: number) => {
+        stopSpeaking();
         const updated = [...reviewTodos];
         updated.splice(index, 1);
         setReviewTodos(updated);
     };
 
     const handleConfirmReview = async () => {
+        await stopSpeaking();
         setIsSaving(true);
         if (!supabase) {
             alert('Database connection error');
@@ -634,20 +670,83 @@ export default function UploadScreen() {
                 if (excretionError) throw excretionError;
             }
 
-            // Todos Insertion (as Calendar Events)
+            // Todos Insertion (into todo_items AND calendar_events)
             if (reviewTodos.length > 0) {
+                // 1. Insert into todo_items
                 const todosToInsert = reviewTodos.map(t => ({
                     user_id: userId,
                     document_id: documentId,
                     title: t.title || 'New Task',
                     description: t.description || t.summary,
-                    type: 'todo',
-                    scheduled_at: t.dueDate ? new Date(t.dueDate).toISOString() : new Date().toISOString(),
-                    duration_minutes: 30,
-                    completed: false
+                    priority: 'medium',
+                    due_date: new Date().toISOString().split('T')[0], // Default to today as start date
+                    scheduled_datetime: new Date().toISOString(),
+                    completed: false,
+                    frequency_days: t.frequencyDays ? parseInt(t.frequencyDays) : null,
+                    duration_days: t.durationDays ? parseInt(t.durationDays) : 120 // Default 120
                 }));
-                const { error: todoError } = await supabase.from('calendar_events').insert(todosToInsert as any);
+
+                const { data: insertedTodos, error: todoError } = await supabase
+                    .from('todo_items')
+                    .insert(todosToInsert as any)
+                    .select();
+
                 if (todoError) throw todoError;
+
+                // 2. Create corresponding calendar events
+                if (insertedTodos && insertedTodos.length > 0) {
+                    const calendarEvents: any[] = [];
+
+                    // Iterate inserted todos to generate events
+                    (insertedTodos as any[]).forEach((todo) => {
+                        const startDate = new Date(); // Now
+                        const durationDays = todo.duration_days || 1;
+                        const frequencyDays = todo.frequency_days;
+
+                        if (frequencyDays) {
+                            // Generate events based on day interval
+                            // frequencyDays = 1 (Daily), 7 (Weekly), etc.
+
+                            // Calculate end date
+                            const endDate = new Date(startDate);
+                            endDate.setDate(endDate.getDate() + durationDays);
+
+                            let currentDate = new Date(startDate);
+                            // Start from today or tomorrow?
+                            // User: "start day ... should be the date the photo is uploaded" -> Today.
+
+                            // Loop until we exceed duration/end date
+                            let dayCount = 0;
+                            while (dayCount < durationDays) {
+                                calendarEvents.push({
+                                    user_id: userId,
+                                    document_id: documentId,
+                                    todo_item_id: todo.id,
+                                    title: todo.title,
+                                    description: todo.description,
+                                    type: 'todo',
+                                    source_type: 'todo',
+                                    scheduled_at: currentDate.toISOString(),
+                                    duration_minutes: 30,
+                                    completed: false
+                                });
+
+                                // Increment by frequency
+                                currentDate.setDate(currentDate.getDate() + frequencyDays);
+                                dayCount += frequencyDays;
+                            }
+                        }
+                        // ELSE: Do NOT create calendar events if no frequency (User Request)
+                    });
+
+                    if (calendarEvents.length > 0) {
+                        const { error: calError } = await supabase
+                            .from('calendar_events')
+                            .insert(calendarEvents as any);
+
+                        if (calError) console.error('Error creating calendar events for todos:', calError);
+                    }
+                }
             }
 
             // Generate Calendar Schedule
@@ -773,6 +872,7 @@ export default function UploadScreen() {
     };
 
     const handleUploadAnother = () => {
+        stopSpeaking();
         setImage(null);
         setSelectedType(null);
         setUploadProgress(0);
@@ -788,39 +888,38 @@ export default function UploadScreen() {
 
 
 
-    const speakText = async (text: string) => {
+    const speakText = async (text: string, id: string) => {
         if (!text) return;
 
-        // If already speaking, stop
-        if (isSpeaking) {
-            await stopSpeaking();
+        if (speakingItemId === id) {
+            stopSpeaking();
             return;
         }
 
+        if (speakingItemId) {
+            await stopSpeaking();
+        }
+
+        setSpeakingItemId(id);
+        setIsUploading(true); // Reuse loading state for spinner if needed, or create new one
         try {
-            await stopSpeaking(); // Stop any existing audio
-            setIsSpeaking(true);
-
-            const { audioContent } = await generateSpeech(text);
-            const { sound } = await Audio.Sound.createAsync(
-                { uri: `data:audio/mp3;base64,${audioContent}` },
-                { shouldPlay: true }
-            );
-
+            const { audioContent } = await generateSpeech(text); // Destructure audioContent
+            const uri = FileSystem.documentDirectory + 'speech.mp3';
+            await FileSystem.writeAsStringAsync(uri, audioContent, { encoding: FileSystem.EncodingType.Base64 });
+            const { sound } = await Audio.Sound.createAsync({ uri });
             currentSoundRef.current = sound;
-
-            // Clear state when playback finishes
+            await sound.playAsync();
             sound.setOnPlaybackStatusUpdate((status) => {
                 if (status.isLoaded && status.didJustFinish) {
-                    currentSoundRef.current = null;
-                    setIsSpeaking(false);
-                    sound.unloadAsync();
+                    setSpeakingItemId(null);
                 }
             });
         } catch (error) {
             console.error('TTS Error:', error);
-            setIsSpeaking(false);
-            alert('Failed to play audio');
+            alert('Failed to generate speech');
+            setSpeakingItemId(null);
+        } finally {
+            setIsUploading(false);
         }
     };
 
@@ -942,6 +1041,27 @@ export default function UploadScreen() {
                         </Text>
 
                         <View style={styles.summaryStats}>
+                            {/* Display Document Type (Prioritized) only if medical_document */}
+                            {(processingResult?.type || processingResult?.extractedData?.primaryType) &&
+                                processingResult?.extractedData?.contentLabels?.includes('medical_document') && (
+                                    <View style={styles.statRow}>
+                                        <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8 }}>
+                                            <MaterialCommunityIcons name="file-document" size={20} color={theme.colors.primary} />
+                                            <Text variant="bodyLarge" style={{ fontWeight: 'bold' }}>
+                                                {(
+                                                    processingResult?.extractedData?.title ||
+                                                    processingResult?.extractedData?.contentLabels?.find((l: string) =>
+                                                        !['medical_document', 'other', 'health_metrics'].includes(l)
+                                                    ) ||
+                                                    processingResult?.extractedData?.primaryType ||
+                                                    processingResult?.type ||
+                                                    'Document'
+                                                ).replace(/_/g, ' ')}
+                                            </Text>
+                                        </View>
+                                    </View>
+                                )}
+
                             {reviewMeds.length > 0 && (
                                 <View style={styles.statRow}>
                                     <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8 }}>
@@ -997,6 +1117,7 @@ export default function UploadScreen() {
                                     </View>
                                 </View>
                             )}
+
                         </View>
 
                         <Button mode="contained" onPress={() => setStep('review')} style={styles.doneButton}>
@@ -1005,181 +1126,264 @@ export default function UploadScreen() {
                     </View>
                 )}
 
-                {step === 'review' && (
-                    <View style={{ paddingBottom: 100 }}>
+                {
+                    step === 'review' && (
+                        <View style={{ paddingBottom: 100 }}>
 
 
 
 
-                        {/* Medications Summary Cards */}
-                        {reviewMeds.map((med, index) => (
-                            <Card
-                                key={`med-${index}`}
-                                style={styles.reviewCard}
-                                onPress={() => setEditingItem({ type: 'medication', index })}
-                            >
-                                <Card.Title
-                                    title={med.name || 'Unknown Medication'}
-                                    subtitle={med.instructions || 'No instructions available'}
-                                    subtitleNumberOfLines={0}
-                                    left={(props) => <MaterialCommunityIcons {...props} name="pill" />}
-                                    right={(props) => (
-                                        <IconButton
-                                            {...props}
-                                            icon={isSpeaking ? 'stop' : 'volume-high'}
-                                            iconColor={isSpeaking ? theme.colors.error : undefined}
-                                            onPress={() => {
-                                                const textToSpeak = [
-                                                    med.name,
-                                                    med.indication ? `Indication: ${med.indication}` : '',
-                                                    med.instructions ? `Instructions: ${med.instructions}` : '',
-                                                    med.precaution ? `Precaution: ${med.precaution}` : '',
-                                                    med.monitoringRecommendation ? `Monitoring: ${med.monitoringRecommendation}` : ''
-                                                ].filter(Boolean).join('. ');
-                                                speakText(textToSpeak);
-                                            }}
+                            {/* Document Summary Card (New) - Only if medical_document */}
+                            {(processingResult?.type || processingResult?.extractedData?.primaryType) &&
+                                processingResult?.extractedData?.contentLabels?.includes('medical_document') && (
+                                    <Card
+                                        style={styles.reviewCard}
+                                        onPress={() => handleEditItem({ type: 'document_summary', index: 0 })}
+                                    >
+                                        <Card.Title
+                                            title={processingResult?.extractedData?.title || (processingResult?.extractedData?.primaryType || processingResult?.type || 'Document').replace(/_/g, ' ')}
+                                            titleNumberOfLines={0}
+                                            left={(props) => <MaterialCommunityIcons {...props} name="file-document-outline" />}
+                                            right={(props) => (
+                                                <IconButton
+                                                    {...props}
+                                                    icon={speakingItemId === 'doc_summary' ? 'stop' : 'volume-high'}
+                                                    iconColor={speakingItemId === 'doc_summary' ? theme.colors.error : undefined}
+                                                    onPress={() => {
+                                                        const title = processingResult?.extractedData?.title || (processingResult?.extractedData?.primaryType || processingResult?.type || 'Document').replace(/_/g, ' ');
+                                                        const summary = processingResult?.summary || processingResult?.extractedData?.summary || 'No summary available.';
+                                                        speakText(`${title}. ${summary}`, 'doc_summary');
+                                                    }}
+                                                />
+                                            )}
+                                            titleStyle={{ textTransform: 'none' }}
                                         />
-                                    )}
-                                />
-                            </Card>
-                        ))}
-
-                        {/* Metrics Summary Cards */}
-                        {reviewMetrics.map((metric, index) => {
-                            const rangeStatus = calculateRangeStatus(parseFloat(metric.value), metric.normalRangeLower, metric.normalRangeUpper);
-                            const statusColor = rangeStatus === 'normal' ? '#4CAF50' : (rangeStatus === 'high' || rangeStatus === 'low' ? '#FF9800' : theme.colors.primary);
-
-                            return (
+                                    </Card>
+                                )}
+                            {reviewMeds.map((med, index) => (
                                 <Card
-                                    key={`metric-${index}`}
+                                    key={`med-${index}`}
                                     style={styles.reviewCard}
-                                    onPress={() => setSelectedMetricIndex(index)}
+                                    onPress={() => handleEditItem({ type: 'medication', index })}
                                 >
                                     <Card.Title
-                                        title={metric.name || 'New Metric'}
-                                        subtitle={`${metric.value} ${metric.unit}`}
-                                        left={(props) => <MaterialCommunityIcons {...props} name="heart-pulse" />}
+                                        title={med.name || 'Unknown Medication'}
+                                        subtitle={med.instructions || 'No instructions available'}
+                                        subtitleNumberOfLines={0}
+                                        left={(props) => <MaterialCommunityIcons {...props} name="pill" />}
                                         right={(props) => (
                                             <IconButton
                                                 {...props}
-                                                icon="volume-high"
-                                                onPress={() => speakMetricDetails(metric)}
+                                                icon={speakingItemId === `med-${index}` ? 'stop' : 'volume-high'}
+                                                iconColor={speakingItemId === `med-${index}` ? theme.colors.error : undefined}
+                                                onPress={() => {
+                                                    const textToSpeak = [
+                                                        med.name,
+                                                        med.indication ? `Indication: ${med.indication}` : '',
+                                                        med.instructions ? `Instructions: ${med.instructions}` : '',
+                                                        med.precaution ? `Precaution: ${med.precaution}` : '',
+                                                        med.monitoringRecommendation ? `Monitoring: ${med.monitoringRecommendation}` : ''
+                                                    ].filter(Boolean).join('. ');
+                                                    speakText(textToSpeak, `med-${index}`);
+                                                }}
                                             />
                                         )}
                                     />
-                                    {rangeStatus && (
-                                        <Card.Content>
-                                            <Text style={{ color: statusColor, fontWeight: 'bold' }}>
-                                                {rangeStatus === 'normal' ? 'Within Normal Range' : (rangeStatus === 'high' ? 'Too High' : 'Too Low')}
-                                            </Text>
-                                        </Card.Content>
-                                    )}
                                 </Card>
-                            )
-                        })}
+                            ))}
 
-                        {/* Conditions Summary Cards */}
-                        {reviewBodyConditions.map((condition, index) => (
-                            <Card
-                                key={`cond-${index}`}
-                                style={styles.reviewCard}
-                                onPress={() => setEditingItem({ type: 'body_condition', index })}
-                            >
-                                <Card.Title
-                                    title={condition.conditionType || 'Body Condition'}
-                                    subtitle={condition.bodyLocation}
-                                    left={(props) => <MaterialCommunityIcons {...props} name="account-injury" />}
-                                    right={(props) => (
-                                        <IconButton
-                                            {...props}
-                                            icon={isSpeaking ? 'stop' : 'volume-high'}
-                                            iconColor={isSpeaking ? theme.colors.error : undefined}
-                                            onPress={() => {
-                                                const textToSpeak = [
-                                                    `Name: ${condition.conditionType || 'Unknown condition'}`,
-                                                    condition.possibleCondition ? `Possible Condition: ${condition.possibleCondition}` : '',
-                                                    condition.possibleCause ? `Possible Cause: ${condition.possibleCause}` : '',
-                                                    condition.careAdvice ? `Care Advice: ${condition.careAdvice}` : '',
-                                                    condition.precautions ? `Precautions: ${condition.precautions}` : '',
-                                                    condition.whenToSeekCare ? `When to Seek Care: ${condition.whenToSeekCare}` : ''
-                                                ].filter(Boolean).join('. ');
-                                                speakText(textToSpeak);
-                                            }}
+                            {/* Metrics Summary Cards */}
+                            {reviewMetrics.map((metric, index) => {
+                                const rangeStatus = calculateRangeStatus(parseFloat(metric.value), metric.normalRangeLower, metric.normalRangeUpper);
+                                const statusColor = rangeStatus === 'normal' ? '#4CAF50' : (rangeStatus === 'high' || rangeStatus === 'low' ? '#FF9800' : theme.colors.primary);
+
+                                return (
+                                    <Card
+                                        key={`metric-${index}`}
+                                        style={styles.reviewCard}
+                                        onPress={() => handleSelectMetric(index)}
+                                    >
+                                        <Card.Title
+                                            title={metric.name || 'New Metric'}
+                                            subtitle={`${metric.value} ${metric.unit}`}
+                                            left={(props) => <MaterialCommunityIcons {...props} name="heart-pulse" />}
+                                            right={(props) => (
+                                                <IconButton
+                                                    {...props}
+                                                    icon={speakingItemId === `metric-${index}` ? 'stop' : 'volume-high'}
+                                                    iconColor={speakingItemId === `metric-${index}` ? theme.colors.error : undefined}
+                                                    onPress={() => speakMetricDetails(metric, `metric-${index}`)}
+                                                />
+                                            )}
                                         />
-                                    )}
-                                />
-                            </Card>
-                        ))}
+                                        {rangeStatus && (
+                                            <Card.Content>
+                                                <Text style={{ color: statusColor, fontWeight: 'bold' }}>
+                                                    {rangeStatus === 'normal' ? 'Within Normal Range' : (rangeStatus === 'high' ? 'Too High' : 'Too Low')}
+                                                </Text>
+                                            </Card.Content>
+                                        )}
+                                    </Card>
+                                )
+                            })}
 
-                        {/* Excretions Summary Cards */}
-                        {reviewBodilyExcretions.map((excretion, index) => (
-                            <Card
-                                key={`excr-${index}`}
-                                style={styles.reviewCard}
-                                onPress={() => setEditingItem({ type: 'bodily_excretion', index })}
+                            {/* Conditions Summary Cards */}
+                            {reviewBodyConditions.map((condition, index) => (
+                                <Card
+                                    key={`cond-${index}`}
+                                    style={styles.reviewCard}
+                                    onPress={() => handleEditItem({ type: 'body_condition', index })}
+                                >
+                                    <Card.Title
+                                        title={condition.conditionType || 'Body Condition'}
+                                        subtitle={condition.bodyLocation}
+                                        left={(props) => <MaterialCommunityIcons {...props} name="account-injury" />}
+                                        right={(props) => (
+                                            <IconButton
+                                                {...props}
+                                                icon={speakingItemId === `cond-${index}` ? 'stop' : 'volume-high'}
+                                                iconColor={speakingItemId === `cond-${index}` ? theme.colors.error : undefined}
+                                                onPress={() => {
+                                                    const textToSpeak = [
+                                                        `Name: ${condition.conditionType || 'Unknown condition'}`,
+                                                        condition.possibleCondition ? `Possible Condition: ${condition.possibleCondition}` : '',
+                                                        condition.possibleCause ? `Possible Cause: ${condition.possibleCause}` : '',
+                                                        condition.careAdvice ? `Care Advice: ${condition.careAdvice}` : '',
+                                                        condition.precautions ? `Precautions: ${condition.precautions}` : '',
+                                                        condition.whenToSeekCare ? `When to Seek Care: ${condition.whenToSeekCare}` : ''
+                                                    ].filter(Boolean).join('. ');
+                                                    speakText(textToSpeak, `cond-${index}`);
+                                                }}
+                                            />
+                                        )}
+                                    />
+                                </Card>
+                            ))}
+
+                            {/* Excretions Summary Cards */}
+                            {reviewBodilyExcretions.map((excretion, index) => (
+                                <Card
+                                    key={`excr-${index}`}
+                                    style={styles.reviewCard}
+                                    onPress={() => handleEditItem({ type: 'bodily_excretion', index })}
+                                >
+                                    <Card.Title
+                                        title={excretion.excretionType || 'Bodily Excretion'}
+                                        subtitle={excretion.summary || 'Tap to edit details'}
+                                        left={(props) => <MaterialCommunityIcons {...props} name="water" />}
+                                        right={(props) => <IconButton {...props} icon="pencil" />}
+                                    />
+                                </Card>
+                            ))}
+
+                            {/* Todos Summary Cards */}
+                            {reviewTodos.map((todo, index) => (
+                                <Card
+                                    key={`todo-${index}`}
+                                    style={styles.reviewCard}
+                                    onPress={() => handleEditItem({ type: 'todo', index })}
+                                >
+                                    <Card.Title
+                                        title={todo.title || 'Task'}
+                                        titleNumberOfLines={0}
+                                        left={(props) => <MaterialCommunityIcons {...props} name="checkbox-marked-circle-outline" />}
+                                        right={(props) => (
+                                            <IconButton
+                                                {...props}
+                                                icon={speakingItemId === `todo-${index}` ? 'stop' : 'volume-high'}
+                                                iconColor={speakingItemId === `todo-${index}` ? theme.colors.error : undefined}
+                                                onPress={() => {
+                                                    const textToSpeak = [
+                                                        todo.title,
+                                                        todo.description || todo.summary,
+                                                        todo.dueDate ? `Due date: ${new Date(todo.dueDate).toLocaleDateString()}` : ''
+                                                    ].filter(Boolean).join('. ');
+                                                    speakText(textToSpeak, `todo-${index}`);
+                                                }}
+                                            />
+                                        )}
+                                    />
+                                </Card>
+                            ))}
+
+                            <Button
+                                mode="contained"
+                                onPress={handleConfirmReview}
+                                style={styles.confirmButton}
+                                loading={isSaving}
+                                disabled={isSaving}
                             >
-                                <Card.Title
-                                    title={excretion.excretionType || 'Bodily Excretion'}
-                                    subtitle={excretion.summary || 'Tap to edit details'}
-                                    left={(props) => <MaterialCommunityIcons {...props} name="water" />}
-                                    right={(props) => <IconButton {...props} icon="pencil" />}
-                                />
-                            </Card>
-                        ))}
-
-                        {/* Todos Summary Cards */}
-                        {reviewTodos.map((todo, index) => (
-                            <Card
-                                key={`todo-${index}`}
-                                style={styles.reviewCard}
-                                onPress={() => setEditingItem({ type: 'todo', index })}
-                            >
-                                <Card.Title
-                                    title={todo.title || 'Task'}
-                                    subtitle={todo.dueDate ? `Due: ${new Date(todo.dueDate).toLocaleDateString()}` : 'No Due Date'}
-                                    left={(props) => <MaterialCommunityIcons {...props} name="checkbox-marked-circle-outline" />}
-                                    right={(props) => <IconButton {...props} icon="pencil" />}
-                                />
-                            </Card>
-                        ))}
-
-                        <Button
-                            mode="contained"
-                            onPress={handleConfirmReview}
-                            style={styles.confirmButton}
-                            loading={isSaving}
-                            disabled={isSaving}
-                        >
-                            Confirm all and Save
-                        </Button>
-                    </View>
-                )}
-
-                {step === 'success' && (
-                    <View style={styles.successContainer}>
-                        <View style={[styles.successIcon, { backgroundColor: theme.colors.secondaryContainer }]}>
-                            <MaterialCommunityIcons name="check" size={48} color={theme.colors.secondary} />
+                                Confirm all and Save
+                            </Button>
                         </View>
-                        <Text variant="headlineSmall" style={{ marginTop: tokens.spacing.lg }}>Success!</Text>
-                        <Text variant="bodyMedium" style={{ textAlign: 'center', marginVertical: tokens.spacing.md }}>
-                            All items have been verified and saved to your health record.
-                        </Text>
-                        <Button mode="contained" onPress={handleDone} style={styles.doneButton}>
-                            Done
-                        </Button>
-                        <Button mode="outlined" onPress={handleUploadAnother} style={{ marginTop: 12 }}>
-                            Upload Another
-                        </Button>
-                    </View>
-                )}
-            </ScrollView>
+                    )
+                }
+
+                {
+                    step === 'success' && (
+                        <View style={styles.successContainer}>
+                            <View style={[styles.successIcon, { backgroundColor: theme.colors.secondaryContainer }]}>
+                                <MaterialCommunityIcons name="check" size={48} color={theme.colors.secondary} />
+                            </View>
+                            <Text variant="headlineSmall" style={{ marginTop: tokens.spacing.lg }}>Success!</Text>
+                            <Text variant="bodyMedium" style={{ textAlign: 'center', marginVertical: tokens.spacing.md }}>
+                                All items have been verified and saved to your health record.
+                            </Text>
+                            <Button mode="contained" onPress={handleDone} style={styles.doneButton}>
+                                Done
+                            </Button>
+                            <Button mode="outlined" onPress={handleUploadAnother} style={{ marginTop: 12 }}>
+                                Upload Another
+                            </Button>
+                        </View>
+                    )
+                }
+            </ScrollView >
 
             {/* Edit Modals */}
             <Portal>
-                {/* Medication Modal */}
-                <Dialog visible={editingItem?.type === 'medication'} onDismiss={() => setEditingItem(null)} style={{ width: '90%', alignSelf: 'center', borderRadius: 8 }}>
+                {/* Document Summary Modal */}
+                <Dialog visible={editingItem?.type === 'document_summary'} onDismiss={() => handleEditItem(null)} style={{ width: '90%', alignSelf: 'center', borderRadius: 8 }}>
                     <View style={{ flexDirection: 'row', justifyContent: 'flex-end', position: 'absolute', right: 0, top: 0, zIndex: 1 }}>
-                        <IconButton icon="close" size={20} onPress={() => setEditingItem(null)} />
+                        <IconButton icon="close" size={20} onPress={() => handleEditItem(null)} />
+                    </View>
+                    <Dialog.Title style={{ paddingRight: 40 }}>
+                        {processingResult?.extractedData?.title || (processingResult?.extractedData?.primaryType || processingResult?.type || 'Unknown').replace(/_/g, ' ')}
+                    </Dialog.Title>
+                    <Dialog.ScrollArea style={{ maxHeight: '80%', paddingHorizontal: 0 }}>
+                        <ScrollView contentContainerStyle={{ paddingHorizontal: 24, paddingVertical: 16 }}>
+                            <View style={{ marginBottom: 16 }}>
+                                <Text variant="labelLarge" style={{ color: theme.colors.primary, marginBottom: 4 }}>Type</Text>
+                                <Chip icon="file-document" style={{ alignSelf: 'flex-start' }}>
+                                    {(processingResult?.extractedData?.primaryType || processingResult?.type || 'Unknown').replace(/_/g, ' ')}
+                                </Chip>
+                            </View>
+
+                            <View style={{ marginBottom: 16 }}>
+                                <Text variant="labelLarge" style={{ color: theme.colors.primary, marginBottom: 4 }}>Summary</Text>
+                                <Text variant="bodyMedium" style={{ lineHeight: 22 }}>
+                                    {processingResult?.summary || processingResult?.extractedData?.summary || 'No summary available.'}
+                                </Text>
+                            </View>
+
+                            {/* Extracted Counts */}
+                            <View style={{ marginBottom: 16 }}>
+                                <Text variant="labelLarge" style={{ color: theme.colors.primary, marginBottom: 8 }}>Extracted Items</Text>
+                                <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: 8 }}>
+                                    {reviewMeds.length > 0 && <Chip icon="pill">{reviewMeds.length} Medications</Chip>}
+                                    {reviewMetrics.length > 0 && <Chip icon="heart-pulse">{reviewMetrics.length} Metrics</Chip>}
+                                    {reviewTodos.length > 0 && <Chip icon="checkbox-marked-circle-outline">{reviewTodos.length} Tasks</Chip>}
+                                    {reviewBodyConditions.length > 0 && <Chip icon="account-injury">{reviewBodyConditions.length} Conditions</Chip>}
+                                </View>
+                            </View>
+                        </ScrollView>
+                    </Dialog.ScrollArea>
+                </Dialog>
+
+                {/* Medication Modal */}
+                <Dialog visible={editingItem?.type === 'medication'} onDismiss={() => handleEditItem(null)} style={{ width: '90%', alignSelf: 'center', borderRadius: 8 }}>
+                    <View style={{ flexDirection: 'row', justifyContent: 'flex-end', position: 'absolute', right: 0, top: 0, zIndex: 1 }}>
+                        <IconButton icon="close" size={20} onPress={() => handleEditItem(null)} />
                     </View>
                     <Dialog.Title style={{ paddingRight: 40 }}>
                         {editingItem?.type === 'medication' ? reviewMeds[editingItem.index]?.name || 'Medication' : 'Medication'}
@@ -1242,7 +1446,7 @@ export default function UploadScreen() {
                 </Dialog>
 
                 {/* Metric Modal */}
-                <Dialog visible={editingItem?.type === 'metric'} onDismiss={() => setEditingItem(null)}>
+                <Dialog visible={editingItem?.type === 'metric'} onDismiss={() => handleEditItem(null)}>
                     <Dialog.Title>Edit Metric</Dialog.Title>
                     <Dialog.Content>
                         {editingItem?.type === 'metric' && (
@@ -1272,17 +1476,17 @@ export default function UploadScreen() {
                         <Button onPress={() => {
                             if (editingItem && editingItem.type === 'metric') {
                                 handleRemoveMetric(editingItem.index);
-                                setEditingItem(null);
+                                handleEditItem(null);
                             }
                         }} textColor={theme.colors.error}>Remove</Button>
-                        <Button onPress={() => setEditingItem(null)}>Done</Button>
+                        <Button onPress={() => handleEditItem(null)}>Done</Button>
                     </Dialog.Actions>
                 </Dialog>
 
                 {/* Condition Modal */}
-                <Dialog visible={editingItem?.type === 'body_condition'} onDismiss={() => setEditingItem(null)} style={{ width: '90%', alignSelf: 'center', borderRadius: 8 }}>
+                <Dialog visible={editingItem?.type === 'body_condition'} onDismiss={() => handleEditItem(null)} style={{ width: '90%', alignSelf: 'center', borderRadius: 8 }}>
                     <View style={{ flexDirection: 'row', justifyContent: 'flex-end', position: 'absolute', right: 0, top: 0, zIndex: 1 }}>
-                        <IconButton icon="close" size={20} onPress={() => setEditingItem(null)} />
+                        <IconButton icon="close" size={20} onPress={() => handleEditItem(null)} />
                     </View>
                     <Dialog.Title style={{ paddingRight: 40 }}>
                         {editingItem?.type === 'body_condition' ? reviewBodyConditions[editingItem.index]?.conditionType || 'Body Condition' : 'Body Condition'}
@@ -1409,44 +1613,34 @@ export default function UploadScreen() {
                 </Dialog>
 
                 {/* Todo Modal */}
-                <Dialog visible={editingItem?.type === 'todo'} onDismiss={() => setEditingItem(null)}>
-                    <Dialog.Title>Edit Task</Dialog.Title>
+                <Dialog visible={editingItem?.type === 'todo'} onDismiss={() => handleEditItem(null)} style={{ width: '90%', alignSelf: 'center', borderRadius: 8 }}>
+                    <View style={{ flexDirection: 'row', justifyContent: 'flex-end', position: 'absolute', right: 0, top: 0, zIndex: 1 }}>
+                        <IconButton icon="close" size={20} onPress={() => handleEditItem(null)} />
+                    </View>
+                    <Dialog.Title style={{ paddingRight: 40 }}>
+                        {editingItem && editingItem.type === 'todo' ? reviewTodos[editingItem.index]?.title : 'Task'}
+                    </Dialog.Title>
                     <Dialog.Content>
                         {editingItem?.type === 'todo' && (
                             <>
-                                <TextInput
-                                    label="Title"
-                                    value={reviewTodos[editingItem.index]?.title}
-                                    onChangeText={(t) => handleUpdateTodo(editingItem.index, 'title', t)}
-                                    style={styles.input} mode="outlined"
-                                />
-                                <TextInput
-                                    label="Description"
-                                    value={reviewTodos[editingItem.index]?.description}
-                                    onChangeText={(t) => handleUpdateTodo(editingItem.index, 'description', t)}
-                                    style={styles.input} mode="outlined" multiline
-                                />
+                                <View style={{ marginBottom: 16 }}>
+                                    <Text variant="labelLarge" style={{ color: theme.colors.primary, marginBottom: 4 }}>Description</Text>
+                                    <Text variant="bodyMedium" style={{ lineHeight: 22 }}>
+                                        {reviewTodos[editingItem.index]?.description || reviewTodos[editingItem.index]?.summary || 'No description available.'}
+                                    </Text>
+                                </View>
                             </>
                         )}
                     </Dialog.Content>
-                    <Dialog.Actions>
-                        <Button onPress={() => {
-                            if (editingItem && editingItem.type === 'todo') {
-                                handleRemoveTodo(editingItem.index);
-                                setEditingItem(null);
-                            }
-                        }} textColor={theme.colors.error}>Remove</Button>
-                        <Button onPress={() => setEditingItem(null)}>Done</Button>
-                    </Dialog.Actions>
                 </Dialog>
                 {/* Metric Details Modal */}
                 <Dialog
                     visible={selectedMetricIndex !== null}
-                    onDismiss={() => setSelectedMetricIndex(null)}
+                    onDismiss={() => handleSelectMetric(null)}
                     style={{ width: '90%', alignSelf: 'center', borderRadius: 8 }}
                 >
                     <View style={{ flexDirection: 'row', justifyContent: 'flex-end', position: 'absolute', right: 0, top: 0, zIndex: 1 }}>
-                        <IconButton icon="close" size={20} onPress={() => setSelectedMetricIndex(null)} />
+                        <IconButton icon="close" size={20} onPress={() => handleSelectMetric(null)} />
                     </View>
                     <Dialog.Title style={{ paddingRight: 40 }}>
                         {selectedMetricIndex !== null ? reviewMetrics[selectedMetricIndex]?.name || 'Health Metric' : 'Health Metric'}
@@ -1525,8 +1719,8 @@ export default function UploadScreen() {
                         </ScrollView>
                     </Dialog.ScrollArea>
                 </Dialog>
-            </Portal>
-        </SafeAreaView>
+            </Portal >
+        </SafeAreaView >
     );
 }
 

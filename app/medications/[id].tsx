@@ -1,5 +1,5 @@
 import { useState, useEffect } from 'react';
-import { View, StyleSheet, ScrollView, Image, Dimensions, ActivityIndicator, Alert } from 'react-native';
+import { View, StyleSheet, ScrollView, Image, Dimensions, ActivityIndicator, Alert, KeyboardAvoidingView, Platform, Keyboard } from 'react-native';
 import { Text, Card, useTheme, IconButton, Button, Portal, Dialog, TextInput } from 'react-native-paper';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { useRouter, useLocalSearchParams } from 'expo-router';
@@ -42,7 +42,29 @@ export default function MedicationDetailScreen() {
     const [editDialogVisible, setEditDialogVisible] = useState(false);
     const [editDosage, setEditDosage] = useState('');
     const [editFrequency, setEditFrequency] = useState('');
+
     const [editDuration, setEditDuration] = useState('');
+    const [isKeyboardVisible, setKeyboardVisible] = useState(false);
+
+    useEffect(() => {
+        const keyboardDidShowListener = Keyboard.addListener(
+            'keyboardDidShow',
+            () => {
+                setKeyboardVisible(true);
+            }
+        );
+        const keyboardDidHideListener = Keyboard.addListener(
+            'keyboardDidHide',
+            () => {
+                setKeyboardVisible(false);
+            }
+        );
+
+        return () => {
+            keyboardDidHideListener.remove();
+            keyboardDidShowListener.remove();
+        };
+    }, []);
 
     useEffect(() => {
         async function fetchMedication() {
@@ -320,32 +342,44 @@ export default function MedicationDetailScreen() {
 
             {/* Edit Dialog */}
             <Portal>
-                <Dialog visible={editDialogVisible} onDismiss={() => setEditDialogVisible(false)}>
-                    <Dialog.Title>Edit Medication</Dialog.Title>
-                    <Dialog.Content>
-                        <TextInput
-                            label="Dosage"
-                            value={editDosage}
-                            onChangeText={setEditDosage}
-                            mode="outlined"
-                            style={{ marginBottom: 12 }}
-                        />
-                        <TextInput
-                            label="Frequency (hours)"
-                            value={editFrequency}
-                            onChangeText={setEditFrequency}
-                            mode="outlined"
-                            keyboardType="numeric"
-                            style={{ marginBottom: 12 }}
-                        />
-                        <TextInput
-                            label="Duration (days)"
-                            value={editDuration}
-                            onChangeText={setEditDuration}
-                            mode="outlined"
-                            keyboardType="numeric"
-                        />
-                    </Dialog.Content>
+                <Dialog
+                    visible={editDialogVisible}
+                    onDismiss={() => setEditDialogVisible(false)}
+                    style={isKeyboardVisible ? { transform: [{ translateY: -160 }] } : undefined}
+                >
+                    <Dialog.Title style={{ fontSize: 18 }}>Edit Medication</Dialog.Title>
+                    <Dialog.ScrollArea>
+                        <KeyboardAvoidingView behavior={Platform.OS === 'ios' ? 'padding' : 'height'}>
+                            <ScrollView contentContainerStyle={{ paddingVertical: 12 }}>
+                                <TextInput
+                                    label="Dosage"
+                                    value={editDosage}
+                                    onChangeText={setEditDosage}
+                                    mode="outlined"
+                                    style={{ marginBottom: 8, height: 48 }}
+                                    contentStyle={{ paddingTop: 0, paddingBottom: 0 }}
+                                />
+                                <TextInput
+                                    label="Frequency (hours)"
+                                    value={editFrequency}
+                                    onChangeText={setEditFrequency}
+                                    mode="outlined"
+                                    keyboardType="numeric"
+                                    style={{ marginBottom: 8, height: 48 }}
+                                    contentStyle={{ paddingTop: 0, paddingBottom: 0 }}
+                                />
+                                <TextInput
+                                    label="Duration (days)"
+                                    value={editDuration}
+                                    onChangeText={setEditDuration}
+                                    mode="outlined"
+                                    keyboardType="numeric"
+                                    style={{ height: 48 }}
+                                    contentStyle={{ paddingTop: 0, paddingBottom: 0 }}
+                                />
+                            </ScrollView>
+                        </KeyboardAvoidingView>
+                    </Dialog.ScrollArea>
                     <Dialog.Actions>
                         <Button onPress={() => setEditDialogVisible(false)}>Cancel</Button>
                         <Button onPress={async () => {

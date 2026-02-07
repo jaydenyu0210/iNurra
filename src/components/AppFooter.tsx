@@ -1,5 +1,5 @@
 import React, { useState, useRef, useEffect } from 'react';
-import { View, StyleSheet, Dimensions, Animated, Pressable, Platform, Keyboard, TextInput, Modal } from 'react-native';
+import { View, StyleSheet, Dimensions, Animated, Pressable, Platform, Keyboard, TextInput, Modal, DeviceEventEmitter } from 'react-native';
 import { IconButton, Text, Surface, useTheme, Button } from 'react-native-paper';
 import { useRouter, usePathname } from 'expo-router';
 import { MaterialCommunityIcons } from '@expo/vector-icons';
@@ -26,6 +26,10 @@ export function AppFooter() {
     const dialogTranslateY = useRef(new Animated.Value(height)).current;
 
     const toggleMode = (targetMode: 'talking' | 'keyboard') => {
+        if (targetMode !== 'default') {
+            DeviceEventEmitter.emit('STOP_SPEAKING');
+        }
+
         if (mode === 'default') {
             setMode(targetMode);
             Animated.timing(centerButtonOpacity, {

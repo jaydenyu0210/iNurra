@@ -1,6 +1,6 @@
 import { useState, useEffect, useCallback, useRef } from 'react';
 import { useFocusEffect } from '@react-navigation/native';
-import { View, StyleSheet, ScrollView, Dimensions, Text as RNText, Alert } from 'react-native';
+import { View, StyleSheet, ScrollView, Dimensions, Text as RNText, Alert, DeviceEventEmitter } from 'react-native';
 import { Text, Card, Button, useTheme, IconButton, FAB, Chip, ActivityIndicator } from 'react-native-paper';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { useRouter } from 'expo-router';
@@ -151,8 +151,21 @@ export default function HealthScreen() {
     useFocusEffect(
         useCallback(() => {
             fetchMetrics();
+            return () => {
+                stopSpeaking();
+            };
         }, [fetchMetrics])
     );
+
+    // Listen for global stop speaking events
+    useEffect(() => {
+        const subscription = DeviceEventEmitter.addListener('STOP_SPEAKING', () => {
+            stopSpeaking();
+        });
+        return () => {
+            subscription.remove();
+        };
+    }, []);
 
     const handleDelete = (metricId: string, metricType: string) => {
         Alert.alert(

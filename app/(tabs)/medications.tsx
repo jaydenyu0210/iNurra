@@ -1,6 +1,6 @@
 import { useState, useEffect, useCallback, useRef } from 'react';
 import { useFocusEffect } from '@react-navigation/native';
-import { View, StyleSheet, FlatList, Alert, Image } from 'react-native';
+import { View, StyleSheet, FlatList, Alert, Image, DeviceEventEmitter } from 'react-native';
 import { Text, Card, Button, useTheme, IconButton, Chip } from 'react-native-paper';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { useRouter } from 'expo-router';
@@ -103,8 +103,21 @@ export default function MedicationsScreen() {
     useFocusEffect(
         useCallback(() => {
             fetchMedications();
+            return () => {
+                stopPlayback();
+            };
         }, [fetchMedications])
     );
+
+    // Listen for global stop speaking events
+    useEffect(() => {
+        const subscription = DeviceEventEmitter.addListener('STOP_SPEAKING', () => {
+            stopPlayback();
+        });
+        return () => {
+            subscription.remove();
+        };
+    }, []);
 
     const handleDelete = (medId: string, medName: string) => {
         Alert.alert(

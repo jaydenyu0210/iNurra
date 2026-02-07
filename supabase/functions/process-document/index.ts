@@ -11,6 +11,11 @@ import {
 const CLASSIFICATION_PROMPT = `
 You are an expert medical document and health image analyzer. Your task is to perform MULTI-LABEL classification - identify ALL applicable content types present in the uploaded image/document.
 
+## CRITICAL INSTRUCTION: TITLE PRIORITY
+1.  **SCAN FOR TITLES/HEADERS FIRST**: Look at the top of the document for bold headings or titles (e.g., "DISCHARGE SUMMARY", "PATIENT PLAN", "LAB REPORT").
+2.  **MATCH TITLE TO TYPE**: If a title is found that matches a \`medical_document\` subtype (like "Discharge Summary"), you **MUST** select \`medical_document\` and the corresponding subtype label.
+3.  **IGNORE LOW CONTENT**: Even if the rest of the document is sparse, the TITLE is the source of truth for the document type. Do NOT classify as "other" if a valid medical title is present.
+
 ## CONTENT LABELS (Select ALL that apply)
 
 Analyze the image and select EVERY applicable label from this list:
@@ -26,11 +31,28 @@ Analyze the image and select EVERY applicable label from this list:
 2. **health_metrics** - Health measurements and vital signs
    - Look for: Blood pressure readings (120/80), weight, glucose levels, heart rate, temperature, device displays
 
-3. **test_result** - Lab results, blood work, pathology reports, imaging results
-   - Look for: Reference ranges, lab values, test names, diagnostic codes
+3. **medical_document** - Clinical notes, reports, and records
+   - **SUBTYPES (Select strictly from this list)**:
+     - "Test Results" (Labs, blood work, pathology, imaging)
+     - "Medical Report"
+     - "Medical Record"
+     - "Doctor’s Note"
+     - "Treatment Plan"
+     - "Discharge Summary"
+     - "Referral"
+     - "Vaccination Record"
+     - "Allergy Record"
+     - "Diagnosis Record"
+     - "Symptom Record"
+     - "Appointment Record"
+     - "Care Instructions / Follow-up Instructions"
+   - Look for: Clinical headers, doctor signatures, medical terminology.
 
 4. **todo_activity** - Action items, follow-up instructions, appointments to schedule
    - Look for: "Follow up with...", "Schedule...", "Return in X weeks", checklists, action items
+   - **INFER FREQUENCY**: If the task implies a repeated action (e.g. "Monitor blood pressure daily"), extract:
+     - Frequency (in days): "daily" = 1, "weekly" = 7, "every 3 days" = 3
+     - Duration (in days): "1 week" = 7, "3 days" = 3
 
 5. **body_condition** - Physical body marks, wounds, rashes, moles, bruises, skin conditions
    - Look for: Photos of skin, wounds, rashes, lesions, bruises, swelling, any visible body condition
@@ -41,10 +63,7 @@ Analyze the image and select EVERY applicable label from this list:
    - Look for: Stool, urine, vomit, blood, mucus, discharge - photos or descriptions
    - IMPORTANT: These are sensitive medical observations for tracking health
 
-7. **medical_document** - Clinical notes, visit summaries, discharge summaries, referral letters
-   - Look for: Medical terminology, clinical observations, diagnosis, treatment plans
-
-8. **other** - ONLY if no other category applies (insurance forms, bills with no medical data)
+7. **other** - ONLY if no other category applies (insurance forms, bills with no medical data)
 
 ## OUTPUT FORMAT
 
@@ -54,7 +73,7 @@ Return a JSON object with this EXACT structure:
   "contentLabels": ["label1", "label2", ...],  // Array of ALL applicable labels
   "primaryType": "string",  // The MOST relevant single type for backward compatibility
   "isPureItem": boolean, // TRUE if this is a direct photo of an item/condition (e.g. pill bottle, thermometer, skin rash) and NOT a document/paper/report.
-  "title": "string",  // Short descriptive title with date if found
+  "title": "string",  // Short descriptive title in Title Case (e.g. "Discharge Summary"). DO NOT INCLUDE DATES in the title.
   "summary": "string",  // Clear, simple summary of what's in the document/image
   
   // Include sections below ONLY if the corresponding label is present:
@@ -104,6 +123,8 @@ Return a JSON object with this EXACT structure:
     "priority": "low|medium|high|urgent",
     "dueDate": "YYYY-MM-DD|null",
     "dueTime": "HH:MM|null",
+    "dueTime": "HH:MM|null",
+    "frequencyDays": "number|null", // Extracted frequency interval in days (e.g. 1 for daily, 7 for weekly)
     "summary": "string", // Brief summary of the task
     "isRecurring": false,
     "recurrenceRule": "string|null",
@@ -458,13 +479,48 @@ Analyze the image above along with any extracted text and user description to pr
         // ALL items (pure or not) are now treated as staged documents until confirmed by user.
         console.log(`[Step 7] Updating document data... isPureItem=${extractedData.isPureItem}`);
 
+
+        // Map primaryType to valid DB enum document_type
+        const mapToDocumentType = (type: string, labels: string[] = []): string => {
+            const validTypes = [
+                'prescription_label', 'prescription_paper', 'doctors_note', 'lab_report',
+                'imaging_report', 'health_device_reading', 'body_photo', 'stool_urine_photo',
+                'insurance_form', 'appointment_card', 'general_health_document', 'other'
+            ];
+
+            // Normalize
+            const normalized = type.toLowerCase().trim();
+
+            if (validTypes.includes(normalized)) return normalized;
+
+            // Mappings for Gemini outputs incompatible with DB enum
+            if (normalized === 'medical_document') {
+                // Refine using subtypes/labels
+                if (labels.some(l => l.toLowerCase().includes('test result'))) return 'lab_report';
+                if (labels.some(l => l.toLowerCase().includes('discharge summary'))) return 'general_health_document'; // or doctors_note
+                if (labels.some(l => l.toLowerCase().includes('doctor'))) return 'doctors_note';
+                return 'general_health_document';
+            }
+            if (normalized === 'prescription') return 'prescription_paper'; // Default for generic prescription
+            if (normalized === 'todo_activity') return 'other'; // todo is not a document type usually
+            if (normalized === 'body_condition') return 'body_photo';
+            if (normalized === 'bodily_excretion') return 'stool_urine_photo';
+            if (normalized === 'health_metrics') return 'health_device_reading';
+            if (normalized === 'test_result') return 'lab_report'; // Fallback if test_result is primary
+
+            return 'other';
+        };
+
+        const dbDocumentType = mapToDocumentType(extractedData.primaryType || 'other', extractedData.contentLabels || []);
+        console.log(`[Step 7] Mapped Gemini type '${extractedData.primaryType}' to DB enum '${dbDocumentType}'`);
+
         const { error: updateError } = await supabase
             .from('documents')
             .update({
                 raw_text: extractedText || null,
                 summary: extractedData.summary,
                 title: extractedData.title,
-                type: extractedData.primaryType || 'other',
+                type: dbDocumentType,
                 content_labels: extractedData.contentLabels,
                 extracted_data: extractedData,
                 embedding: embedding.length > 0 ? embedding : null,

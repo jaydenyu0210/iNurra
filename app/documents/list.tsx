@@ -41,22 +41,7 @@ export default function DocumentsListScreen() {
 
             if (error) throw error;
 
-            // Fetch document IDs that have linked data
-            const [medsResult, metricsResult, conditionsResult] = await Promise.all([
-                supabase.from('medications').select('document_id').eq('user_id', user.id),
-                supabase.from('health_metrics').select('source_document_id').eq('user_id', user.id),
-                supabase.from('body_conditions').select('document_id').eq('user_id', user.id),
-            ]);
-
-            // Collect all document IDs that have extracted data
-            const excludedIds = new Set<string>();
-            medsResult.data?.forEach((m: any) => m.document_id && excludedIds.add(m.document_id));
-            metricsResult.data?.forEach((m: any) => m.source_document_id && excludedIds.add(m.source_document_id));
-            conditionsResult.data?.forEach((c: any) => c.document_id && excludedIds.add(c.document_id));
-
-            // Filter out documents with extracted data
-            const filteredDocs = (docs || []).filter((doc: any) => !excludedIds.has(doc.id));
-            setDocuments(filteredDocs);
+            setDocuments(docs || []);
         } catch (error) {
             console.error('Error fetching documents:', error);
         } finally {

@@ -1,6 +1,6 @@
 import { useState, useEffect, useRef, useCallback } from 'react';
 import { View, StyleSheet, ScrollView, Dimensions, Alert, TouchableOpacity } from 'react-native';
-import { Text, Card, Button, SegmentedButtons, useTheme, IconButton, Chip, ActivityIndicator } from 'react-native-paper';
+import { Text, Card, Button, SegmentedButtons, useTheme, IconButton, Chip, ActivityIndicator, Portal, Dialog, TextInput } from 'react-native-paper';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { useRouter, useLocalSearchParams } from 'expo-router';
 import { Calendar as RNCalendar, DateData } from 'react-native-calendars';
@@ -14,7 +14,7 @@ const { width, height } = Dimensions.get('window');
 const HOUR_HEIGHT = 60;
 const HOURS = Array.from({ length: 24 }, (_, i) => i);
 
-interface CalendarEvent {
+interface AppCalendarEvent {
     id: string;
     title: string;
     description?: string;
@@ -23,6 +23,9 @@ interface CalendarEvent {
     duration_minutes?: number;
     completed: boolean;
     medication_id?: string;
+    todo_item_id?: string;
+    frequency_days?: number;
+    duration_days?: number;
 }
 
 type ViewMode = 'day' | 'week' | 'month';
@@ -44,13 +47,20 @@ export default function CalendarScreen() {
         }
     }, [initialViewMode]);
 
-    const [events, setEvents] = useState<CalendarEvent[]>([]);
+    const [events, setEvents] = useState<any[]>([]);
     const [loading, setLoading] = useState(true);
     const [currentTime, setCurrentTime] = useState(new Date());
 
+    // Edit Todo State
+    const [editingTodo, setEditingTodo] = useState<AppCalendarEvent | null>(null);
+    const [editTodoTitle, setEditTodoTitle] = useState('');
+    const [editTodoFrequency, setEditTodoFrequency] = useState<string | undefined>(undefined);
+    const [editTodoDuration, setEditTodoDuration] = useState<string | undefined>(undefined);
+    const [editDialogVisible, setEditDialogVisible] = useState(false);
+
     // Fetch events (from calendar_events table + generate from medications)
     const fetchEvents = useCallback(async () => {
-        if (!user?.id) return;
+        if (!user?.id || !supabase) return;
 
         try {
             const startDate = new Date(selectedDate);
@@ -69,6 +79,26 @@ export default function CalendarScreen() {
 
             if (calendarError) throw calendarError;
 
+            // Fetch VALID todo items (non-null frequency and duration) to filter out orphans
+            const { data: validTodos, error: todoError } = await supabase
+                .from('todo_items')
+                .select('id')
+                .eq('user_id', user.id)
+                .not('frequency_days', 'is', null)
+                .not('duration_days', 'is', null);
+
+            if (todoError) throw todoError;
+
+            const validTodoIds = new Set((validTodos as any[] || []).map(t => t.id));
+
+            // Filter calendar events:
+            // 1. Keep non-todo events
+            // 2. Keep todo events ONLY if they belong to a valid todo item
+            const filteredCalendarEvents = (calendarData || []).filter((e: any) => {
+                if (e.type !== 'todo') return true;
+                return e.todo_item_id && validTodoIds.has(e.todo_item_id);
+            });
+
             // Also fetch active medications to generate events on-the-fly
             const { data: medications, error: medError } = await supabase
                 .from('medications')
@@ -79,11 +109,11 @@ export default function CalendarScreen() {
             if (medError) throw medError;
 
             // Generate medication events from frequency/duration if not already in calendar_events
-            const medicationEvents: CalendarEvent[] = [];
+            const medicationEvents: AppCalendarEvent[] = [];
 
             // Track which medications already have events in the database
             const medsWithExistingEvents = new Set(
-                (calendarData || [])
+                filteredCalendarEvents
                     .filter((e: any) => e.type === 'medication' && e.medication_id)
                     .map((e: any) => e.medication_id)
             );
@@ -142,12 +172,13 @@ export default function CalendarScreen() {
             });
 
             // Combine and sort all events
-            const allEvents = [...(calendarData || []), ...medicationEvents]
-                .sort((a, b) => new Date(a.scheduled_at).getTime() - new Date(b.scheduled_at).getTime());
+            const allEvents = [...filteredCalendarEvents, ...medicationEvents].sort((a, b) =>
+                new Date(a.scheduled_at).getTime() - new Date(b.scheduled_at).getTime()
+            );
 
-            console.log(`Calendar: Total events = ${allEvents.length}, from DB = ${(calendarData || []).length}, generated = ${medicationEvents.length}`);
+            console.log(`Calendar: Total events = ${allEvents.length}, from DB = ${filteredCalendarEvents.length}, generated = ${medicationEvents.length}`);
 
-            setEvents(allEvents);
+            setEvents(allEvents as AppCalendarEvent[]);
         } catch (error) {
             console.error('Error fetching events:', error);
         } finally {
@@ -196,33 +227,212 @@ export default function CalendarScreen() {
         }
     };
 
-    const handleEventPress = (event: CalendarEvent) => {
-        Alert.alert(
-            event.title,
-            `${event.description || ''}\n\nTime: ${format(parseISO(event.scheduled_at), 'h:mm a')}\nStatus: ${event.completed ? 'Completed' : 'Pending'}`,
-            [
-                { text: 'Close', style: 'cancel' },
-                {
-                    text: event.completed ? 'Mark Incomplete' : 'Mark Complete',
-                    onPress: async () => {
-                        try {
-                            await supabase
-                                .from('calendar_events')
-                                .update({ completed: !event.completed } as any)
-                                .eq('id', event.id);
-                            fetchEvents();
-                        } catch (error) {
-                            console.error('Error updating event:', error);
+    const handleEventPress = (event: AppCalendarEvent) => {
+        if (event.type === 'todo') {
+            Alert.alert(
+                event.title,
+                `${event.description || ''}\nStatus: ${event.completed ? 'Completed' : 'Pending'}`,
+                [
+                    { text: 'Close', style: 'cancel' },
+                    {
+                        text: 'Edit Task',
+                        onPress: async () => {
+                            // Fetch full todo details to get frequency/duration
+                            if (event.todo_item_id && supabase) {
+                                const { data } = await supabase
+                                    .from('todo_items')
+                                    .select('*')
+                                    .eq('id', event.todo_item_id)
+                                    .single();
+
+                                const todoData = data as any;
+
+                                if (todoData) {
+                                    setEditTodoTitle(todoData.title);
+                                    setEditTodoFrequency(todoData.frequency_days ? String(todoData.frequency_days) : '');
+                                    setEditTodoDuration(todoData.duration_days ? String(todoData.duration_days) : '');
+                                    setEditingTodo({ ...event, frequency_days: todoData.frequency_days, duration_days: todoData.duration_days });
+                                    setEditDialogVisible(true);
+                                }
+                            }
                         }
                     },
-                },
-            ]
-        );
+                    {
+                        text: event.completed ? 'Mark Incomplete' : 'Mark Complete',
+                        onPress: async () => {
+                            if (supabase) {
+                                await supabase
+                                    .from('calendar_events')
+                                    .update({ completed: !event.completed } as any)
+                                    .eq('id', event.id);
+
+                                // Also update the todo item itself
+                                if (event.todo_item_id) {
+                                    await supabase
+                                        .from('todo_items')
+                                        .update({ completed: !event.completed } as any)
+                                        .eq('id', event.todo_item_id);
+                                }
+                                fetchEvents();
+                            }
+                        },
+                    },
+                    {
+                        text: 'Delete',
+                        style: 'destructive',
+                        onPress: () => {
+                            Alert.alert('Delete Task', 'Are you sure you want to delete this task?', [
+                                { text: 'Cancel', style: 'cancel' },
+                                {
+                                    text: 'Delete',
+                                    style: 'destructive',
+                                    onPress: async () => {
+                                        if (event.todo_item_id && supabase) {
+                                            // Delete Calendar Events first (foreign key might cascade, but be safe)
+                                            await supabase
+                                                .from('calendar_events')
+                                                .delete()
+                                                .eq('todo_item_id', event.todo_item_id);
+
+                                            // Delete Todo Item
+                                            await supabase
+                                                .from('todo_items')
+                                                .delete()
+                                                .eq('id', event.todo_item_id);
+
+                                            fetchEvents();
+                                        }
+                                    }
+                                }
+                            ]);
+                        }
+                    }
+                ]
+            );
+        } else {
+            Alert.alert(
+                event.title,
+                `${event.description || ''}\n\nTime: ${format(parseISO(event.scheduled_at), 'h:mm a')}\nStatus: ${event.completed ? 'Completed' : 'Pending'}`,
+                [
+                    { text: 'Close', style: 'cancel' },
+                    {
+                        text: event.completed ? 'Mark Incomplete' : 'Mark Complete',
+                        onPress: async () => {
+                            try {
+                                if (supabase) {
+                                    await supabase
+                                        .from('calendar_events')
+                                        .update({ completed: !event.completed } as any)
+                                        .eq('id', event.id);
+                                    fetchEvents();
+                                }
+                            } catch (error) {
+                                console.error('Error updating event:', error);
+                            }
+                        },
+                    },
+                ]
+            );
+        }
     };
 
-    const getEventsForDate = (date: string) => {
+    const saveTodoEdit = async () => {
+        if (!editingTodo || !editingTodo.todo_item_id) return;
+        setEditDialogVisible(false); // Close immediately
+
+        try {
+            const freq = editTodoFrequency ? parseInt(editTodoFrequency) : null;
+            const dur = editTodoDuration ? parseInt(editTodoDuration) : null;
+
+            // 1. Update Todo Item
+            if (supabase) {
+                const { error: updateError } = await supabase
+                    .from('todo_items')
+                    .update({
+                        title: editTodoTitle,
+                        frequency_days: freq,
+                        duration_days: dur
+                    } as any)
+                    .eq('id', editingTodo.todo_item_id);
+
+                if (updateError) throw updateError;
+
+                // 2. Regenerate Calendar Events (Delete old future events, Create new ones)
+                // Delete all future events for this todo
+                const { error: deleteError } = await supabase
+                    .from('calendar_events')
+                    .delete()
+                    .eq('todo_item_id', editingTodo.todo_item_id)
+                    .gte('scheduled_at', new Date().toISOString());
+
+                if (deleteError) throw deleteError;
+
+                // Create new events
+                const startDate = new Date(); // Start from today
+                const durationDays = dur || 1;
+                const frequencyDays = freq;
+
+                const calendarEvents: any[] = [];
+                // Same logic as upload.tsx
+                if (frequencyDays) {
+                    const endDate = new Date(startDate);
+                    endDate.setDate(endDate.getDate() + durationDays);
+                    let currentDate = new Date(startDate);
+                    let dayCount = 0;
+                    while (dayCount < durationDays) {
+                        // Only add if it's in the future (or today)
+                        if (currentDate >= new Date(new Date().setHours(0, 0, 0, 0))) {
+                            calendarEvents.push({
+                                user_id: user?.id,
+                                todo_item_id: editingTodo.todo_item_id,
+                                title: editTodoTitle,
+                                description: editingTodo.description,
+                                type: 'todo',
+                                source_type: 'todo',
+                                scheduled_at: currentDate.toISOString(),
+                                duration_minutes: 30,
+                                completed: false
+                            });
+                        }
+                        currentDate.setDate(currentDate.getDate() + frequencyDays);
+                        dayCount += frequencyDays;
+                    }
+                } else {
+                    // Single event if no frequency, only if it hasn't passed? 
+                    // Or update the existing one? Complex.
+                    // Let's assume user wants to reschedule to Today if they edit without frequency.
+                    calendarEvents.push({
+                        user_id: user?.id,
+                        todo_item_id: editingTodo.todo_item_id,
+                        title: editTodoTitle,
+                        description: editingTodo.description,
+                        type: 'todo',
+                        source_type: 'todo',
+                        scheduled_at: new Date().toISOString(), // Reset to today
+                        duration_minutes: 30,
+                        completed: false
+                    });
+                }
+
+                if (calendarEvents.length > 0) {
+                    await supabase
+                        .from('calendar_events')
+                        .insert(calendarEvents as any);
+                }
+
+                fetchEvents();
+            }
+        } catch (error) {
+            console.error('Error saving todo:', error);
+            Alert.alert('Error', 'Failed to save changes');
+        }
+    };
+
+    const getEventsForDate = (date: string): AppCalendarEvent[] => {
         return events.filter(event => {
             const eventDate = format(parseISO(event.scheduled_at), 'yyyy-MM-dd');
+            // Day View: Hide Todos
+            if (viewMode === 'day' && event.type === 'todo') return false;
             return eventDate === date;
         });
     };
@@ -272,7 +482,7 @@ export default function CalendarScreen() {
                     {/* Events */}
                     {(() => {
                         // Group events by time slot to handle overlaps
-                        const eventsByTime: Record<string, CalendarEvent[]> = {};
+                        const eventsByTime: Record<string, AppCalendarEvent[]> = {};
                         dayEvents.forEach(event => {
                             const eventTime = parseISO(event.scheduled_at);
                             const hour = eventTime.getHours();
@@ -422,7 +632,10 @@ export default function CalendarScreen() {
                                             {event.title}
                                         </Text>
                                         <Text variant="bodySmall" style={{ color: theme.colors.onSurfaceVariant }}>
-                                            {format(parseISO(event.scheduled_at), 'h:mm a')}
+                                            {event.type === 'todo'
+                                                ? format(parseISO(event.scheduled_at), 'MMM d') // Date only for todos
+                                                : format(parseISO(event.scheduled_at), 'h:mm a') // Time for others
+                                            }
                                         </Text>
                                     </View>
                                     <Chip
@@ -452,7 +665,10 @@ export default function CalendarScreen() {
             <View style={styles.monthContainer}>
                 <RNCalendar
                     current={selectedDate}
-                    onDayPress={(day: DateData) => setSelectedDate(day.dateString)}
+                    onDayPress={(day: DateData) => {
+                        setSelectedDate(day.dateString);
+                        setViewMode('week'); // Navigate to Week View
+                    }}
                     hideExtraDays={false}
                     enableSwipeMonths={true}
                     theme={{
@@ -466,8 +682,9 @@ export default function CalendarScreen() {
                                 alignItems: 'center'
                             }
                         }
-                    }}
-                    dayComponent={({ date, state }: { date: DateData; state: string }) => {
+                    } as any}
+                    dayComponent={({ date, state }: { date?: any; state?: any }) => {
+                        if (!date) return <View />; // Handle undefined date
                         const dateStr = date.dateString;
                         const dayEvents = getEventsForDate(dateStr);
                         const isSelected = dateStr === selectedDate;
@@ -477,7 +694,10 @@ export default function CalendarScreen() {
                         return (
                             <TouchableOpacity
                                 activeOpacity={0.7}
-                                onPress={() => setSelectedDate(dateStr)}
+                                onPress={() => {
+                                    setSelectedDate(dateStr);
+                                    setViewMode('week');
+                                }}
                                 style={[
                                     styles.dayCell,
                                     {
@@ -508,20 +728,28 @@ export default function CalendarScreen() {
                                 </Text>
 
                                 <View style={styles.dayEventsContainer}>
-                                    {dayEvents.slice(0, 3).map((event, idx) => (
-                                        <Text
-                                            key={event.id || idx}
-                                            numberOfLines={1}
-                                            style={[styles.miniEventText, { color: theme.colors.primary }]}
-                                        >
-                                            {event.title.replace('💊 ', '')}
-                                        </Text>
-                                    ))}
-                                    {dayEvents.length > 3 && (
-                                        <Text style={[styles.moreEventsText, { color: theme.colors.secondary }]}>
-                                            +{dayEvents.length - 3}
-                                        </Text>
-                                    )}
+                                    {/* Medication Count */}
+                                    {(() => {
+                                        const medCount = new Set(dayEvents.filter((e: AppCalendarEvent) => e.type === 'medication').map((e: AppCalendarEvent) => e.medication_id || e.title)).size;
+                                        const todoCount = new Set(dayEvents.filter((e: AppCalendarEvent) => e.type === 'todo').map((e: AppCalendarEvent) => e.todo_item_id || e.title)).size;
+
+                                        return (
+                                            <View style={{ flexDirection: 'column', gap: 2 }}>
+                                                {medCount > 0 && (
+                                                    <View style={{ flexDirection: 'row', alignItems: 'center', gap: 2 }}>
+                                                        <MaterialCommunityIcons name="pill" size={10} color={theme.colors.primary} />
+                                                        <Text style={{ fontSize: 9, color: theme.colors.primary }}>x {medCount}</Text>
+                                                    </View>
+                                                )}
+                                                {todoCount > 0 && (
+                                                    <View style={{ flexDirection: 'row', alignItems: 'center', gap: 2 }}>
+                                                        <MaterialCommunityIcons name="checkbox-marked-circle-outline" size={10} color={theme.colors.secondary} />
+                                                        <Text style={{ fontSize: 9, color: theme.colors.secondary }}>x {todoCount}</Text>
+                                                    </View>
+                                                )}
+                                            </View>
+                                        );
+                                    })()}
                                 </View>
                             </TouchableOpacity>
                         );
@@ -596,6 +824,44 @@ export default function CalendarScreen() {
                     {viewMode === 'month' && renderMonthView()}
                 </>
             )}
+            {/* Edit Todo Dialog */}
+            <Portal>
+                <Dialog visible={editDialogVisible} onDismiss={() => setEditDialogVisible(false)}>
+                    <Dialog.Title>Edit Task</Dialog.Title>
+                    <Dialog.Content>
+                        <View>
+                            <TextInput
+                                label="Title"
+                                value={editTodoTitle}
+                                onChangeText={setEditTodoTitle}
+                                mode="outlined"
+                                style={{ marginBottom: 12 }}
+                            />
+                            <TextInput
+                                label="Frequency (days)"
+                                value={editTodoFrequency}
+                                onChangeText={setEditTodoFrequency}
+                                mode="outlined"
+                                keyboardType="numeric"
+                                placeholder="e.g. 1 for daily"
+                                style={{ marginBottom: 12 }}
+                            />
+                            <TextInput
+                                label="Duration (days)"
+                                value={editTodoDuration}
+                                onChangeText={setEditTodoDuration}
+                                mode="outlined"
+                                keyboardType="numeric"
+                                placeholder="e.g. 7"
+                            />
+                        </View>
+                    </Dialog.Content>
+                    <Dialog.Actions>
+                        <Button onPress={() => setEditDialogVisible(false)}>Cancel</Button>
+                        <Button onPress={saveTodoEdit}>Save</Button>
+                    </Dialog.Actions>
+                </Dialog>
+            </Portal>
         </SafeAreaView>
     );
 }
