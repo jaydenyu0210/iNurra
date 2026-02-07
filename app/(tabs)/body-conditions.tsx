@@ -1,5 +1,5 @@
-import { useState, useCallback } from 'react';
-import { View, StyleSheet, ScrollView, RefreshControl } from 'react-native';
+import { useState, useCallback, useEffect } from 'react';
+import { View, StyleSheet, ScrollView, RefreshControl, Image, TouchableOpacity } from 'react-native';
 import { Text, Card, Button, useTheme, IconButton, ActivityIndicator } from 'react-native-paper';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { useRouter, useFocusEffect } from 'expo-router';
@@ -9,11 +9,105 @@ import { useAuth } from '../../src/hooks';
 import { tokens } from '../../src/theme';
 import { BodyCondition, BodilyExcretion } from '../../src/types/database';
 
+// Group conditions by label
+interface LabelGroup {
+    label: string;
+    displayName: string;
+    conditions: BodyCondition[];
+    latestCondition: BodyCondition;
+    count: number;
+}
+
+// Sub-component to handle secure image loading for the thumbnail
+const LabelThumbnail = ({ condition, theme }: { condition: BodyCondition, theme: any }) => {
+    const [imageUrl, setImageUrl] = useState<string | null>(null);
+
+    useEffect(() => {
+        const loadImage = async () => {
+            if (condition.document_id && supabase) {
+                try {
+                    const { data: doc } = await supabase
+                        .from('documents')
+                        .select('storage_path')
+                        .eq('id', condition.document_id)
+                        .single();
+
+                    const storagePath = (doc as any)?.storage_path;
+                    if (storagePath) {
+                        const { data } = await supabase.storage
+                            .from('documents')
+                            .createSignedUrl(storagePath, 3600);
+
+                        if (data?.signedUrl) {
+                            setImageUrl(data.signedUrl);
+                        }
+                    }
+                } catch (e) {
+                    console.error('Error loading condition image:', e);
+                }
+            }
+        };
+        loadImage();
+    }, [condition.document_id]);
+
+    if (imageUrl) {
+        return (
+            <View style={[styles.itemIcon, { backgroundColor: 'transparent', overflow: 'hidden' }]}>
+                <Image
+                    source={{ uri: imageUrl }}
+                    style={{ width: '100%', height: '100%' }}
+                    resizeMode="cover"
+                />
+            </View>
+        );
+    }
+
+    return (
+        <View style={[styles.itemIcon, { backgroundColor: theme.colors.errorContainer }]}>
+            <MaterialCommunityIcons name="alert-circle" size={24} color={theme.colors.error} />
+        </View>
+    );
+};
+
+// Helper to format label to display name
+const formatLabelToDisplayName = (label: string): string => {
+    return label
+        .split('_')
+        .map(word => word.charAt(0).toUpperCase() + word.slice(1))
+        .join(' ');
+};
+
+// Get status color
+const getStatusColor = (status: string | null, theme: any) => {
+    switch (status) {
+        case 'improving':
+            return { bg: theme.colors.primaryContainer, text: theme.colors.primary };
+        case 'worsening':
+            return { bg: theme.colors.errorContainer, text: theme.colors.error };
+        case 'no_significant_change':
+            return { bg: theme.colors.surfaceVariant, text: theme.colors.onSurfaceVariant };
+        case 'initial':
+        default:
+            return { bg: theme.colors.tertiaryContainer, text: theme.colors.tertiary };
+    }
+};
+
+// Format status for display
+const formatStatus = (status: string | null): string => {
+    switch (status) {
+        case 'improving': return 'Improving';
+        case 'worsening': return 'Worsening';
+        case 'no_significant_change': return 'No Change';
+        case 'initial':
+        default: return 'Initial';
+    }
+};
+
 export default function BodyConditionsScreen() {
     const theme = useTheme();
     const router = useRouter();
     const { user } = useAuth();
-    
+
     const [bodyConditions, setBodyConditions] = useState<BodyCondition[]>([]);
     const [bodilyExcretions, setBodilyExcretions] = useState<BodilyExcretion[]>([]);
     const [loading, setLoading] = useState(true);
@@ -21,7 +115,7 @@ export default function BodyConditionsScreen() {
 
     const fetchData = useCallback(async () => {
         if (!user?.id || !supabase) return;
-        
+
         try {
             // Fetch body conditions
             const { data: conditions, error: conditionsError } = await supabase
@@ -62,6 +156,31 @@ export default function BodyConditionsScreen() {
         fetchData();
     }, [fetchData]);
 
+    // Group conditions by label
+    const labelGroups: LabelGroup[] = (() => {
+        const groups = new Map<string, BodyCondition[]>();
+
+        for (const condition of bodyConditions) {
+            const label = condition.label || `unlabeled_${condition.id}`;
+            if (!groups.has(label)) {
+                groups.set(label, []);
+            }
+            groups.get(label)!.push(condition);
+        }
+
+        return Array.from(groups.entries()).map(([label, conditions]) => ({
+            label,
+            displayName: label.startsWith('unlabeled_')
+                ? (conditions[0].condition_type || 'Unknown Condition')
+                : formatLabelToDisplayName(label),
+            conditions: conditions.sort((a, b) =>
+                new Date(b.observed_at).getTime() - new Date(a.observed_at).getTime()
+            ),
+            latestCondition: conditions[0],
+            count: conditions.length,
+        }));
+    })();
+
     if (loading) {
         return (
             <SafeAreaView style={[styles.container, { backgroundColor: theme.colors.background }]} edges={['top']}>
@@ -83,19 +202,14 @@ export default function BodyConditionsScreen() {
     return (
         <SafeAreaView style={[styles.container, { backgroundColor: theme.colors.background }]} edges={['top']}>
             <View style={styles.header}>
-                <IconButton 
-                    icon="arrow-left" 
-                    size={24} 
-                    onPress={() => router.replace('/(tabs)')} 
+                <IconButton
+                    icon="arrow-left"
+                    size={24}
+                    onPress={() => router.replace('/(tabs)')}
                 />
                 <Text variant="headlineSmall" style={{ color: theme.colors.onBackground, fontWeight: '600', flex: 1 }}>
                     Body Conditions
                 </Text>
-                <IconButton
-                    icon="plus"
-                    size={24}
-                    onPress={() => router.push('/documents/upload')}
-                />
                 <IconButton
                     icon="calendar"
                     size={24}
@@ -103,7 +217,7 @@ export default function BodyConditionsScreen() {
                 />
             </View>
 
-            <ScrollView 
+            <ScrollView
                 contentContainerStyle={styles.content}
                 refreshControl={<RefreshControl refreshing={refreshing} onRefresh={onRefresh} />}
             >
@@ -126,49 +240,52 @@ export default function BodyConditionsScreen() {
                     </View>
                 ) : (
                     <>
-                        {bodyConditions.length > 0 && (
+                        {labelGroups.length > 0 && (
                             <View style={styles.section}>
                                 <Text variant="titleMedium" style={[styles.sectionTitle, { color: theme.colors.onBackground }]}>
-                                    Conditions ({bodyConditions.length})
+                                    Conditions ({labelGroups.length} {labelGroups.length === 1 ? 'label' : 'labels'})
                                 </Text>
-                                {bodyConditions.map((condition) => (
-                                    <Card 
-                                        key={condition.id} 
-                                        style={styles.itemCard} 
-                                        mode="elevated"
-                                        onPress={() => router.push({
-                                            pathname: '/body-conditions/[id]',
-                                            params: { id: condition.id, type: 'condition' }
-                                        })}
-                                    >
-                                        <Card.Content style={styles.itemContent}>
-                                            <View style={[styles.itemIcon, { backgroundColor: theme.colors.errorContainer }]}>
-                                                <MaterialCommunityIcons name="alert-circle" size={24} color={theme.colors.error} />
-                                            </View>
-                                            <View style={styles.itemInfo}>
-                                                <Text variant="titleMedium" style={{ color: theme.colors.onSurface }}>
-                                                    {condition.condition_type || 'Condition'}
-                                                </Text>
-                                                <Text variant="bodyMedium" style={{ color: theme.colors.onSurfaceVariant }}>
-                                                    {condition.body_location}
-                                                </Text>
-                                                <View style={styles.detailsRow}>
-                                                    <Text variant="labelSmall" style={{ color: theme.colors.onSurfaceVariant }}>
-                                                        {new Date(condition.observed_at).toLocaleDateString()}
+                                {labelGroups.map((group) => {
+                                    const statusColors = getStatusColor(group.latestCondition.progression_status, theme);
+                                    return (
+                                        <Card
+                                            key={group.label}
+                                            style={styles.itemCard}
+                                            mode="elevated"
+                                            onPress={() => router.push({
+                                                pathname: '/body-conditions/[id]',
+                                                params: { id: group.label, type: 'label' }
+                                            })}
+                                        >
+                                            <Card.Content style={styles.itemContent}>
+                                                <LabelThumbnail condition={group.latestCondition} theme={theme} />
+                                                <View style={styles.itemInfo}>
+                                                    <Text variant="titleMedium" style={{ color: theme.colors.onSurface }}>
+                                                        {group.displayName}
                                                     </Text>
-                                                    {condition.severity && (
-                                                        <View style={[styles.badge, { backgroundColor: theme.colors.errorContainer, marginLeft: 8 }]}>
-                                                            <Text variant="labelSmall" style={{ color: theme.colors.error }}>
-                                                                {condition.severity}
+                                                    <View style={styles.detailsRow}>
+                                                        <Text variant="labelSmall" style={{ color: theme.colors.onSurfaceVariant }}>
+                                                            {group.count} {group.count === 1 ? 'photo' : 'photos'}
+                                                        </Text>
+                                                        <View style={[styles.badge, { backgroundColor: statusColors.bg, marginLeft: 8 }]}>
+                                                            <Text variant="labelSmall" style={{ color: statusColors.text }}>
+                                                                {formatStatus(group.latestCondition.progression_status)}
                                                             </Text>
                                                         </View>
-                                                    )}
+                                                    </View>
                                                 </View>
-                                            </View>
-                                            <IconButton icon="chevron-right" size={20} />
-                                        </Card.Content>
-                                    </Card>
-                                ))}
+                                                <IconButton
+                                                    icon="plus"
+                                                    size={20}
+                                                    onPress={() => router.push({
+                                                        pathname: '/documents/upload',
+                                                        params: { presetLabel: group.label }
+                                                    })}
+                                                />
+                                            </Card.Content>
+                                        </Card>
+                                    );
+                                })}
                             </View>
                         )}
 
@@ -178,9 +295,9 @@ export default function BodyConditionsScreen() {
                                     Excretions ({bodilyExcretions.length})
                                 </Text>
                                 {bodilyExcretions.map((excretion) => (
-                                    <Card 
-                                        key={excretion.id} 
-                                        style={styles.itemCard} 
+                                    <Card
+                                        key={excretion.id}
+                                        style={styles.itemCard}
                                         mode="elevated"
                                         onPress={() => router.push({
                                             pathname: '/body-conditions/[id]',
@@ -282,4 +399,3 @@ const styles = StyleSheet.create({
         marginTop: tokens.spacing.xxl,
     },
 });
-

@@ -1,5 +1,4 @@
 import { serve } from 'https://deno.land/std@0.168.0/http/server.ts';
-import { Image } from 'https://deno.land/x/imagescript@1.2.15/mod.ts';
 import {
     corsHeaders,
     getServiceClient,
@@ -8,23 +7,6 @@ import {
     generateEmbedding,
 } from '../_shared/utils.ts';
 
-const DETECTION_PROMPT = `
-You are an expert medical image analyzer. Your task is to DETECT if there is a visible body condition (wound, rash, bruise, mole, lesion, swelling, etc.) in the image.
-
-Analyze the image and return a JSON object with this EXACT structure:
-
-{
-  "hasBodyCondition": boolean,
-  "boundingBox": {
-    "x": number,  // Percentage from left (0-100)
-    "y": number,  // Percentage from top (0-100)
-    "width": number,  // Percentage of image width
-    "height": number  // Percentage of image height
-  } | null
-}
-
-Return ONLY the raw JSON.
-`;
 
 const CLASSIFICATION_PROMPT = `
 You are an expert medical document and health image analyzer. Your task is to perform MULTI-LABEL classification - identify ALL applicable content types present in the uploaded image/document.
@@ -59,7 +41,7 @@ Analyze the image and select EVERY applicable label from this list:
    - Look for: Stool, urine, vomit, blood, mucus, discharge - photos or descriptions
    - IMPORTANT: These are sensitive medical observations for tracking health
 
-7. **doctor_notes** - Clinical notes, visit summaries, discharge summaries, referral letters
+7. **medical_document** - Clinical notes, visit summaries, discharge summaries, referral letters
    - Look for: Medical terminology, clinical observations, diagnosis, treatment plans
 
 8. **other** - ONLY if no other category applies (insurance forms, bills with no medical data)
@@ -100,7 +82,7 @@ Return a JSON object with this EXACT structure:
     }]
   }],
   
-  // If "health_metrics" or "test_result" label:
+  // If "health_metrics" label:
   "metrics": [{
     "name": "string",
     "value": "number",
@@ -135,32 +117,17 @@ Return a JSON object with this EXACT structure:
   
   // If "body_condition" label:
   "bodyConditions": [{
-    "bodyLocation": "string",
-    "locationDescription": "string",
-    "conditionType": "string",
-    "color": "string|null",
-    "texture": "string|null",
-    "shape": "string|null",
-    "severity": "mild|moderate|severe|critical",
+    "bodyLocation": "string", // REQUIRED: MUST be one of: "head", "face", "neck", "left_shoulder", "right_shoulder", "chest", "abdomen", "upper_back", "lower_back", "left_arm", "right_arm", "left_hand", "right_hand", "left_leg", "right_leg", "left_foot", "right_foot". Choose the SINGLE best match.
+    "conditionType": "string", // REQUIRED: Type of condition (e.g., "rash", "bruise", "wound", "mole")
+    "colorDepth": "number", // REQUIRED: Color intensity/depth value from 0 to 1. 0 = very faint/light, 1 = very dark/intense. Measures the redness, darkness, or color intensity of the condition.
+    "size": "number", // REQUIRED: Relative size/area value from 0 to 100. Represents the approximate area of impact in square centimeters (cm²). Estimate based on visual analysis.
+    "progressionStatus": "initial|improving|worsening|no_significant_change|pending_comparison", // "initial" for first observation, "pending_comparison" if matching an existing label
     "summary": "string", // REQUIRED: Highly descriptive summary including size, color, shape, texture from visual + user desc.
-    "dimensions": {
-      "widthMm": "number|null",
-      "heightMm": "number|null",
-      "areaMm2": "number|null",
-      "depthMm": "number|null",
-      "estimationMethod": "string"
-    },
-    "rulerAnnotation": {
-      "shouldAddRuler": true,
-      "suggestedScale": "string",
-      "boundingBox": {
-        "x": "number",
-        "y": "number",
-        "width": "number",
-        "height": "number"
-      }
-    },
-    "notes": "string|null"
+    "possibleCondition": "string", // REQUIRED: Most likely condition (e.g., 'Eczema', 'Laceration', 'Hematoma'). Infer from visual analysis.
+    "possibleCause": "string", // REQUIRED: Potential causes based on visual characteristics and user context.
+    "careAdvice": "string", // REQUIRED: General care advice for this type of condition (e.g., 'Keep clean and dry').
+    "precautions": "string", // REQUIRED: What to avoid (e.g., 'Avoid scratching', 'Monitor for infection signs').
+    "whenToSeekCare": "string" // REQUIRED: Signs that indicate a need for a doctor (e.g., 'If fever develops', 'If redness spreads').
   }],
   
   // If "bodily_excretion" label:
@@ -178,21 +145,18 @@ Return a JSON object with this EXACT structure:
     "notes": "string|null"
   }],
   
-  // If "doctor_notes" label:
+  // If "medical_document" or "test_result" label:
   "keyPoints": ["string"],
   "diagnoses": ["string"],
   "treatmentPlan": "string|null"
 }
 
+
 ## CRITICAL RULES
 
-
-2. **BODY CONDITION DIMENSIONS**: 
-   - ALWAYS try to estimate dimensions for body conditions
-   - Look for reference objects (coins, fingers, rulers) to estimate size
-   - If a ruler is visible, use it for exact measurements
-   - Provide estimation method used
-   - **RETURN BOUNDING BOX**: Use 0-100 percentage coordinates for the region of interest.
+2. **BODY CONDITION ANALYSIS**: 
+   - Analyze color intensity to determine colorDepth (0=very faint, 1=very dark/intense red)
+   - Estimate size as the approximate area in square centimeters (0-100 cm²)
 
 3. **CALENDAR INTEGRATION**:
    - Prescriptions should generate calendar events for each dose
@@ -312,6 +276,44 @@ serve(async (req) => {
 
         // Step 2.5: Removed separate detection. We rely on the main classification.
 
+        // Step 2.6: Fetch existing body condition labels for this user (for visual label matching and comparison)
+        console.log('[Step 5.5] Fetching existing body condition labels...');
+        let existingLabelsContext = '';
+        let existingLabelData: Map<string, any> = new Map();
+        let matchedLabelFromVisual: string | null = null;
+        let userId: string | null = null;
+
+        try {
+            // First get user_id from the document
+            const { data: docData } = await supabase
+                .from('documents')
+                .select('user_id')
+                .eq('id', documentId)
+                .single();
+
+            userId = docData?.user_id || null;
+
+            if (userId) {
+                // Fetch existing body conditions with their labels and document_id for photo comparison
+                const { data: existingConditions } = await supabase
+                    .from('body_conditions')
+                    .select('label, summary, document_id, observed_at, body_location, condition_type, color_depth, size')
+                    .eq('user_id', userId)
+                    .not('label', 'is', null)
+                    .order('observed_at', { ascending: false });
+
+                if (existingConditions && existingConditions.length > 0) {
+                    // Group by label and get most recent for each
+                    for (const cond of existingConditions) {
+                        if (cond.label && !existingLabelData.has(cond.label)) {
+                            existingLabelData.set(cond.label, cond);
+                        }
+                    }
+                }
+            }
+        } catch (labelError) {
+            console.log('[Step 5.5] Could not fetch existing labels, continuing with initial status');
+        }
 
         const contextPrompt = `
 CONTEXT:
@@ -320,7 +322,7 @@ CONTEXT:
 - TOMORROW'S DATE (for medication start): ${tomorrowStr}
 - If a date is found without a year, USE THE CURRENT YEAR (${currentYear}).
 - If no date/time is found, USE "${currentTimestamp}" as the timestamp.
-
+${existingLabelsContext}
 ${extractedText ? `EXTRACTED TEXT FROM DOCUMENT:\n${extractedText}\n\n` : ''}
 ${userDescription ? `USER DESCRIPTION/CONTEXT:\n"${userDescription}"\n\n` : ''}
 Analyze the image above along with any extracted text and user description to provide the multi-label classification.`;
@@ -372,7 +374,71 @@ Analyze the image above along with any extracted text and user description to pr
             extractedData.contentLabels = extractedData.primaryType ? [extractedData.primaryType] : ['other'];
         }
 
-        // Step 3.5: Post-Classification Annotation logic removed per user request.
+        // Step 3.5: Deterministic Label Generation & Progression Check
+        if (extractedData.bodyConditions && extractedData.bodyConditions.length > 0) {
+            console.log('[Step 6] Generating labels and checking progression...');
+
+            for (let i = 0; i < extractedData.bodyConditions.length; i++) {
+                const condition = extractedData.bodyConditions[i];
+
+                // 1. Generate Deterministic Label: location + type
+                // Clean strings: lowercase, remove special chars, replace spaces with underscores
+                const cleanLocation = (condition.bodyLocation || 'unknown').toLowerCase().trim().replace(/[^a-z0-9\s]/g, '').replace(/\s+/g, '_');
+                const cleanType = (condition.conditionType || 'condition').toLowerCase().trim().replace(/[^a-z0-9\s]/g, '').replace(/\s+/g, '_');
+
+                const generatedLabel = `${cleanLocation}_${cleanType}`;
+                extractedData.bodyConditions[i].label = generatedLabel;
+                console.log(`[Step 6] Generated label: "${generatedLabel}"`);
+
+                // 2. Check if this label exists in DB for this user
+                // We fetched existing labels earlier into `existingLabelData` map
+                if (existingLabelData.has(generatedLabel)) {
+                    console.log(`[Step 6] Found existing history for label "${generatedLabel}"`);
+
+                    const prevCondition = existingLabelData.get(generatedLabel);
+
+                    // Numeric Progression Logic (Purely based on metrics as requested)
+                    const prevColor = prevCondition.color_depth;
+                    const prevSize = prevCondition.size;
+                    const currColor = condition.colorDepth;
+                    const currSize = condition.size;
+
+                    console.log(`[Step 6] Comparing metrics for "${generatedLabel}":`);
+                    console.log(`- Previous: Color=${prevColor}, Size=${prevSize}`);
+                    console.log(`- Current:  Color=${currColor}, Size=${currSize}`);
+
+                    let status = 'no_significant_change';
+
+                    if (prevColor !== undefined && prevSize !== undefined && currColor !== undefined && currSize !== undefined) {
+                        const colorDiff = currColor - prevColor;
+                        const sizeDiff = currSize - prevSize;
+
+                        // Thresholds for change
+                        // Improving: Color decreases (fades) or Size decreases
+                        // Worsening: Color increases (darkens) or Size increases
+                        // Using sensitive thresholds: 0.05 for color, 2.0 for size
+
+                        const isImproving = colorDiff <= -0.05 || sizeDiff <= -2.0;
+                        const isWorsening = colorDiff >= 0.05 || sizeDiff >= 2.0;
+
+                        if (isImproving) {
+                            status = 'improving';
+                        } else if (isWorsening) {
+                            status = 'worsening';
+                        }
+                    } else {
+                        console.log('[Step 6] Missing metrics for comparison, defaulting to no_significant_change.');
+                    }
+
+                    extractedData.bodyConditions[i].progressionStatus = status;
+                    console.log(`[Step 6] Determined status: ${status}`);
+                } else {
+                    console.log(`[Step 6] New condition detected (label "${generatedLabel}" not found in history).`);
+                    extractedData.bodyConditions[i].progressionStatus = 'initial';
+                }
+            }
+        }
+
 
         // Step 4: Generate embedding for RAG
         console.log('[Step 6] Generating embedding...');
@@ -388,126 +454,27 @@ Analyze the image above along with any extracted text and user description to pr
         // Step 5: Save data (Conditional based on isPureItem)
         console.log(`[Step 7] Saving extracted data... isPureItem=${extractedData.isPureItem}`);
 
-        if (extractedData.isPureItem) {
-            // PURE ITEM Logic: Insert directly into tables and DELETE document row
-            console.log('Processing as PURE ITEM (bypassing documents table)');
+        // Step 5: Update document in database with extracted data
+        // ALL items (pure or not) are now treated as staged documents until confirmed by user.
+        console.log(`[Step 7] Updating document data... isPureItem=${extractedData.isPureItem}`);
 
-            // 1. Insert Medications
-            if (extractedData.medications && extractedData.medications.length > 0) {
-                console.log(`Inserting ${extractedData.medications.length} medications...`);
-                // Get user_id from the document record before we delete it (or assume we have it in request context? No, we need to fetch it or use the one from document)
-                // We have the documentId, let's fetch user_id first if we don't have it.
-                // Actually, we can just fetch the document first to get the user_id? 
-                // Wait, 'documents' row exists. Let's get user_id from it.
-                const { data: docData, error: docError } = await supabase
-                    .from('documents')
-                    .select('user_id')
-                    .eq('id', documentId)
-                    .single();
+        const { error: updateError } = await supabase
+            .from('documents')
+            .update({
+                raw_text: extractedText || null,
+                summary: extractedData.summary,
+                title: extractedData.title,
+                type: extractedData.primaryType || 'other',
+                content_labels: extractedData.contentLabels,
+                extracted_data: extractedData,
+                embedding: embedding.length > 0 ? embedding : null,
+                processing_status: 'completed',
+                updated_at: new Date().toISOString(),
+            })
+            .eq('id', documentId);
 
-                if (docData?.user_id) {
-                    const medsToInsert = extractedData.medications.map((med: any) => ({
-                        user_id: docData.user_id,
-                        document_id: null, // Pure item, no document link
-                        name: med.name,
-                        dosage: med.dosage,
-                        frequency: med.frequency, // Note: Schema might use different field, check extractedData structure vs DB
-                        instructions: med.instructions,
-                        start_date: med.startDate,
-                        end_date: med.endDate,
-                        is_active: true,
-                        quantity: med.quantity,
-                        duration_days: med.durationDays,
-                        schedule: med.calendarEvents // Storing events as JSON schedule for now
-                    }));
-                    const { error: medError } = await supabase.from('medications').insert(medsToInsert);
-                    if (medError) console.error('Error inserting pure medications:', medError);
-                }
-            }
-
-            // 2. Insert Health Metrics
-            if (extractedData.metrics && extractedData.metrics.length > 0) {
-                console.log(`Inserting ${extractedData.metrics.length} metrics...`);
-                const { data: docData } = await supabase
-                    .from('documents')
-                    .select('user_id')
-                    .eq('id', documentId)
-                    .single();
-
-                if (docData?.user_id) {
-                    const metricsToInsert = extractedData.metrics.map((metric: any) => ({
-                        user_id: docData.user_id,
-                        source_document_id: null,
-                        metric_type: metric.name, // Mapping name to type
-                        value: metric.value,
-                        unit: metric.unit,
-                        recorded_at: metric.recordedAt || new Date().toISOString(),
-                        notes: metric.summary
-                    }));
-                    const { error: metricError } = await supabase.from('health_metrics').insert(metricsToInsert);
-                    if (metricError) console.error('Error inserting pure metrics:', metricError);
-                }
-            }
-
-            // 3. Insert Body Conditions
-            if (extractedData.bodyConditions && extractedData.bodyConditions.length > 0) {
-                console.log(`Inserting ${extractedData.bodyConditions.length} body conditions...`);
-                const { data: docData } = await supabase
-                    .from('documents')
-                    .select('user_id')
-                    .eq('id', documentId)
-                    .single();
-
-                if (docData?.user_id) {
-                    const conditionsToInsert = extractedData.bodyConditions.map((cond: any) => ({
-                        user_id: docData.user_id,
-                        document_id: null,
-                        body_location: cond.bodyLocation,
-                        location_description: cond.locationDescription,
-                        condition_type: cond.conditionType,
-                        severity: cond.severity,
-                        notes: cond.summary,
-                        observed_at: new Date().toISOString(),
-                        annotated_image_path: storagePath // Link the image directly!
-                    }));
-                    const { error: condError } = await supabase.from('body_conditions').insert(conditionsToInsert);
-                    if (condError) console.error('Error inserting pure body conditions:', condError);
-                }
-            }
-
-            // 4. DELETE the document row
-            console.log(`Deleting temporary document row ${documentId}...`);
-            const { error: deleteError } = await supabase
-                .from('documents')
-                .delete()
-                .eq('id', documentId);
-
-            if (deleteError) {
-                console.error('Failed to delete pure item document row:', deleteError);
-                // Non-critical (?) but good to know
-            }
-
-        } else {
-            // DOCUMENT Logic: Update the existing row
-            console.log('Processing as DOCUMENT (updating documents table)');
-            const { error: updateError } = await supabase
-                .from('documents')
-                .update({
-                    raw_text: extractedText || null,
-                    summary: extractedData.summary,
-                    title: extractedData.title,
-                    type: extractedData.primaryType || 'other',
-                    content_labels: extractedData.contentLabels,
-                    extracted_data: extractedData,
-                    embedding: embedding.length > 0 ? embedding : null,
-                    processing_status: 'completed',
-                    updated_at: new Date().toISOString(),
-                })
-                .eq('id', documentId);
-
-            if (updateError) {
-                throw new Error(`Failed to update document: ${updateError.message}`);
-            }
+        if (updateError) {
+            throw new Error(`Failed to update document: ${updateError.message}`);
         }
 
         // Build response summary

@@ -596,19 +596,18 @@ export default function UploadScreen() {
                     user_id: userId,
                     document_id: documentId,
                     body_location: c.bodyLocation || c.body_location || 'unknown',
-                    location_description: c.locationDescription || c.location_description,
-                    width_mm: c.dimensions?.widthMm || c.width_mm,
-                    height_mm: c.dimensions?.heightMm || c.height_mm,
-                    area_mm2: c.dimensions?.areaMm2 || c.area_mm2,
-                    depth_mm: c.dimensions?.depthMm || c.depth_mm,
-                    color: c.color,
-                    texture: c.texture,
-                    shape: c.shape,
-                    severity: c.severity,
                     condition_type: c.conditionType || c.condition_type,
-                    notes: c.notes,
+                    color_depth: c.colorDepth ?? c.color_depth ?? null,
+                    size: c.size ?? null,
                     observed_at: c.observedAt || c.observed_at || new Date().toISOString(),
-                    summary: c.summary || null, // Save summary
+                    summary: c.summary || null,
+                    possible_condition: c.possibleCondition || null,
+                    possible_cause: c.possibleCause || null,
+                    care_advice: c.careAdvice || null,
+                    precautions: c.precautions || null,
+                    when_to_seek_care: c.whenToSeekCare || null,
+                    label: c.label || null,
+                    progression_status: c.progressionStatus || 'initial',
                 }));
                 const { error: conditionError } = await supabase.from('body_conditions').insert(conditionsToInsert as any);
                 if (conditionError) throw conditionError;
@@ -1090,7 +1089,24 @@ export default function UploadScreen() {
                                     title={condition.conditionType || 'Body Condition'}
                                     subtitle={condition.bodyLocation}
                                     left={(props) => <MaterialCommunityIcons {...props} name="account-injury" />}
-                                    right={(props) => <IconButton {...props} icon="pencil" />}
+                                    right={(props) => (
+                                        <IconButton
+                                            {...props}
+                                            icon={isSpeaking ? 'stop' : 'volume-high'}
+                                            iconColor={isSpeaking ? theme.colors.error : undefined}
+                                            onPress={() => {
+                                                const textToSpeak = [
+                                                    `Name: ${condition.conditionType || 'Unknown condition'}`,
+                                                    condition.possibleCondition ? `Possible Condition: ${condition.possibleCondition}` : '',
+                                                    condition.possibleCause ? `Possible Cause: ${condition.possibleCause}` : '',
+                                                    condition.careAdvice ? `Care Advice: ${condition.careAdvice}` : '',
+                                                    condition.precautions ? `Precautions: ${condition.precautions}` : '',
+                                                    condition.whenToSeekCare ? `When to Seek Care: ${condition.whenToSeekCare}` : ''
+                                                ].filter(Boolean).join('. ');
+                                                speakText(textToSpeak);
+                                            }}
+                                        />
+                                    )}
                                 />
                             </Card>
                         ))}
@@ -1275,24 +1291,28 @@ export default function UploadScreen() {
                         <ScrollView contentContainerStyle={{ paddingHorizontal: 24, paddingTop: 16, paddingBottom: 16 }}>
                             {editingItem?.type === 'body_condition' && (
                                 <View>
-                                    {/* Location and Severity */}
+                                    {/* Location and Status */}
                                     <View style={{ flexDirection: 'row', justifyContent: 'space-between', marginBottom: 16 }}>
                                         <View style={{ flex: 1 }}>
                                             <Text variant="labelLarge" style={{ color: theme.colors.primary }}>Location</Text>
                                             <Text variant="bodyMedium">{reviewBodyConditions[editingItem.index]?.bodyLocation || 'Unknown'}</Text>
                                         </View>
                                         <View>
-                                            <Text variant="labelLarge" style={{ color: theme.colors.primary }}>Severity</Text>
+                                            <Text variant="labelLarge" style={{ color: theme.colors.primary }}>Status</Text>
                                             <Chip style={{
-                                                backgroundColor: reviewBodyConditions[editingItem.index]?.severity === 'mild' ? '#4CAF5020' :
-                                                    reviewBodyConditions[editingItem.index]?.severity === 'moderate' ? '#FF980020' : '#F4433620'
+                                                backgroundColor: reviewBodyConditions[editingItem.index]?.progressionStatus === 'improving' ? '#4CAF5020' :
+                                                    reviewBodyConditions[editingItem.index]?.progressionStatus === 'worsening' ? '#F4433620' :
+                                                        reviewBodyConditions[editingItem.index]?.progressionStatus === 'no_significant_change' ? '#9E9E9E20' : '#2196F320'
                                             }}>
                                                 <Text style={{
-                                                    color: reviewBodyConditions[editingItem.index]?.severity === 'mild' ? '#4CAF50' :
-                                                        reviewBodyConditions[editingItem.index]?.severity === 'moderate' ? '#FF9800' : '#F44336',
+                                                    color: reviewBodyConditions[editingItem.index]?.progressionStatus === 'improving' ? '#4CAF50' :
+                                                        reviewBodyConditions[editingItem.index]?.progressionStatus === 'worsening' ? '#F44336' :
+                                                            reviewBodyConditions[editingItem.index]?.progressionStatus === 'no_significant_change' ? '#9E9E9E' : '#2196F3',
                                                     fontWeight: 'bold', textTransform: 'capitalize'
                                                 }}>
-                                                    {reviewBodyConditions[editingItem.index]?.severity || 'Unknown'}
+                                                    {reviewBodyConditions[editingItem.index]?.progressionStatus === 'improving' ? 'Improving' :
+                                                        reviewBodyConditions[editingItem.index]?.progressionStatus === 'worsening' ? 'Worsening' :
+                                                            reviewBodyConditions[editingItem.index]?.progressionStatus === 'no_significant_change' ? 'No Change' : 'Initial'}
                                                 </Text>
                                             </Chip>
                                         </View>
