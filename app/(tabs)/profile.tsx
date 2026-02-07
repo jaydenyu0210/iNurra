@@ -230,7 +230,7 @@ export default function ProfileScreen() {
                         Sign Out
                     </Button>
                     <Text variant="bodySmall" style={[styles.version, { color: theme.colors.onSurfaceVariant }]}>
-                        HealthCompanion v1.0.0
+                        iNurra v1.0.0
                     </Text>
                 </View>
             </ScrollView>

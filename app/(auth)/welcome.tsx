@@ -17,7 +17,7 @@ export default function WelcomeScreen() {
                         <Text style={[styles.icon, { color: theme.colors.primary }]}>💊</Text>
                     </View>
                     <Text variant="displaySmall" style={[styles.title, { color: theme.colors.onBackground }]}>
-                        HealthCompanion
+                        iNurra
                     </Text>
                     <Text variant="bodyLarge" style={[styles.subtitle, { color: theme.colors.onSurfaceVariant }]}>
                         Your personal health assistant that helps you understand your medical records and medications

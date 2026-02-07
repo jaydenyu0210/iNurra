@@ -2,12 +2,12 @@ import 'dotenv/config';
 
 export default {
     expo: {
-        name: 'HealthCompanion',
-        slug: 'health-companion',
+        name: 'iNurra',
+        slug: 'inurra',
         version: '1.0.0',
         orientation: 'portrait',
         icon: './assets/icon.png',
-        scheme: 'healthcompanion',
+        scheme: 'inurra',
         userInterfaceStyle: 'automatic',
         splash: {
             image: './assets/splash.png',
@@ -17,10 +17,10 @@ export default {
         assetBundlePatterns: ['**/*'],
         ios: {
             supportsTablet: true,
-            bundleIdentifier: 'com.jaydenyu.healthcompanion',
+            bundleIdentifier: 'com.jaydenyu.inurra',
             infoPlist: {
-                NSCameraUsageDescription: 'We need camera access to scan your medical documents',
-                NSPhotoLibraryUsageDescription: 'We need photo library access to upload medical documents',
+                NSCameraUsageDescription: 'iNurra need camera access to scan your medical documents',
+                NSPhotoLibraryUsageDescription: 'iNurra need photo library access to upload medical documents',
                 ITSAppUsesNonExemptEncryption: false,
             },
         },
@@ -29,7 +29,7 @@ export default {
                 foregroundImage: './assets/adaptive-icon.png',
                 backgroundColor: '#1A73E8',
             },
-            package: 'com.healthcompanion.app',
+            package: 'com.inurra.app',
             permissions: [
                 'android.permission.CAMERA',
                 'android.permission.READ_EXTERNAL_STORAGE',
@@ -47,8 +47,8 @@ export default {
             [
                 'expo-image-picker',
                 {
-                    photosPermission: 'Allow HealthCompanion to access your photos to upload medical documents',
-                    cameraPermission: 'Allow HealthCompanion to access your camera to scan medical documents',
+                    photosPermission: 'Allow iNurra to access your photos to upload medical documents',
+                    cameraPermission: 'Allow iNurra to access your camera to scan medical documents',
                 },
             ],
             [
@@ -66,7 +66,7 @@ export default {
                 origin: false,
             },
             eas: {
-                projectId: '4318085b-501d-4e5f-9a9f-1770291ef29e',
+                projectId: '9e6ab5bd-f438-439f-97b3-e7bd40fa07ed',
             },
             // Supabase configuration - these will be bundled into the app
             supabaseUrl: process.env.EXPO_PUBLIC_SUPABASE_URL,
