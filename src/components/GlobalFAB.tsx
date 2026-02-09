@@ -16,7 +16,7 @@ export function GlobalFAB() {
     return (
         <FAB
             icon="message-text"
-            label="Ask AI"
+            label="Ask Nurra"
             style={styles.fab}
             onPress={() => router.push('/chat/new')}
             mode="elevated"

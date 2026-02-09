@@ -49,6 +49,9 @@ export default function PhoneScreen() {
         }
 
         const fullPhone = getFullPhoneNumber();
+        // #region agent log
+        fetch('http://127.0.0.1:7244/ingest/fe2ea001-4469-4caa-9eb0-c53bca250d82',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'phone.tsx:handleSubmit',message:'Phone submit called',data:{phonePrefix:fullPhone?.substring(0,6)+'***'},timestamp:Date.now(),sessionId:'debug-session',hypothesisId:'E'})}).catch(()=>{});
+        // #endregion
         const { error: signInError } = await signInWithOtp(fullPhone);
 
         if (signInError) {

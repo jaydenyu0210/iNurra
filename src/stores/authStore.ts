@@ -61,6 +61,9 @@ export const useAuthStore = create<AuthState>((set, get) => ({
     },
 
     signInWithOtp: async (phone: string) => {
+        // #region agent log
+        fetch('http://127.0.0.1:7244/ingest/fe2ea001-4469-4caa-9eb0-c53bca250d82',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'authStore.ts:signInWithOtp',message:'signInWithOtp called',data:{phone:phone?.substring(0,6)+'***',supabaseExists:!!supabase,isInitialized:get().isInitialized},timestamp:Date.now(),sessionId:'debug-session',hypothesisId:'A,C,E'})}).catch(()=>{});
+        // #endregion
         set({ isLoading: true });
         // Demo bypass
         if (phone === '+15550123456') {
@@ -68,6 +71,9 @@ export const useAuthStore = create<AuthState>((set, get) => ({
             return { error: null };
         }
         if (!supabase) {
+            // #region agent log
+            fetch('http://127.0.0.1:7244/ingest/fe2ea001-4469-4caa-9eb0-c53bca250d82',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'authStore.ts:signInWithOtp-null',message:'ERROR: supabase is null',data:{phone:phone?.substring(0,6)+'***'},timestamp:Date.now(),sessionId:'debug-session',hypothesisId:'A,C'})}).catch(()=>{});
+            // #endregion
             set({ isLoading: false });
             return { error: new Error('Supabase client not initialized') };
         }
@@ -149,9 +155,15 @@ export const useAuthStore = create<AuthState>((set, get) => ({
     },
 
     initialize: async () => {
+        // #region agent log
+        fetch('http://127.0.0.1:7244/ingest/fe2ea001-4469-4caa-9eb0-c53bca250d82',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'authStore.ts:initialize',message:'Auth initialize called',data:{alreadyInitialized:get().isInitialized,supabaseExists:!!supabase},timestamp:Date.now(),sessionId:'debug-session',hypothesisId:'C,E'})}).catch(()=>{});
+        // #endregion
         if (get().isInitialized) return;
 
         if (!supabase) {
+            // #region agent log
+            fetch('http://127.0.0.1:7244/ingest/fe2ea001-4469-4caa-9eb0-c53bca250d82',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'authStore.ts:initialize-null',message:'ERROR: supabase null during initialize',data:{},timestamp:Date.now(),sessionId:'debug-session',hypothesisId:'A,C'})}).catch(()=>{});
+            // #endregion
             console.error('Supabase client not initialized');
             set({ isInitialized: true });
             return;

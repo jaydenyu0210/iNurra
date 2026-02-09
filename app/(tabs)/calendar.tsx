@@ -1,8 +1,9 @@
-import { useState, useEffect, useRef, useCallback } from 'react';
-import { View, StyleSheet, ScrollView, Dimensions, Alert } from 'react-native';
-import { Text, Card, Button, SegmentedButtons, useTheme, IconButton, Chip, ActivityIndicator } from 'react-native-paper';
+import { useState, useEffect, useRef, useCallback, useMemo } from 'react';
+import { View, StyleSheet, ScrollView, Dimensions, Alert, TouchableOpacity, PanResponder, Animated, InteractionManager } from 'react-native';
+import { Text, Card, Button, SegmentedButtons, useTheme, IconButton, Chip, ActivityIndicator, Portal, Dialog, TextInput } from 'react-native-paper';
 import { SafeAreaView } from 'react-native-safe-area-context';
-import { useRouter } from 'expo-router';
+import { useRouter, useLocalSearchParams } from 'expo-router';
+import { useFocusEffect } from '@react-navigation/native';
 import { Calendar as RNCalendar, DateData } from 'react-native-calendars';
 import { MaterialCommunityIcons } from '@expo/vector-icons';
 import { format, parseISO, isSameDay, startOfWeek, addDays } from 'date-fns';
@@ -14,7 +15,7 @@ const { width, height } = Dimensions.get('window');
 const HOUR_HEIGHT = 60;
 const HOURS = Array.from({ length: 24 }, (_, i) => i);
 
-interface CalendarEvent {
+interface AppCalendarEvent {
     id: string;
     title: string;
     description?: string;
@@ -23,6 +24,9 @@ interface CalendarEvent {
     duration_minutes?: number;
     completed: boolean;
     medication_id?: string;
+    todo_item_id?: string;
+    frequency_days?: number;
+    duration_days?: number;
 }
 
 type ViewMode = 'day' | 'week' | 'month';
@@ -31,17 +35,46 @@ export default function CalendarScreen() {
     const theme = useTheme();
     const router = useRouter();
     const { user } = useAuth();
+    const { initialViewMode } = useLocalSearchParams<{ initialViewMode?: ViewMode }>();
     const scrollViewRef = useRef<ScrollView>(null);
 
     const [selectedDate, setSelectedDate] = useState(format(new Date(), 'yyyy-MM-dd'));
-    const [viewMode, setViewMode] = useState<ViewMode>('day');
-    const [events, setEvents] = useState<CalendarEvent[]>([]);
+    const [viewMode, setViewMode] = useState<ViewMode>((initialViewMode as ViewMode) || 'month');
+
+    // Update view mode if params change (forcing tab switch)
+    useEffect(() => {
+        if (initialViewMode) {
+            setViewMode(initialViewMode as ViewMode);
+        }
+    }, [initialViewMode]);
+
+    const [events, setEvents] = useState<any[]>([]);
     const [loading, setLoading] = useState(true);
     const [currentTime, setCurrentTime] = useState(new Date());
 
-    // Fetch events
+    // Edit Todo State
+    const [editingTodo, setEditingTodo] = useState<AppCalendarEvent | null>(null);
+    const [editTodoTitle, setEditTodoTitle] = useState('');
+    const [editTodoFrequency, setEditTodoFrequency] = useState<string | undefined>(undefined);
+    const [editTodoDuration, setEditTodoDuration] = useState<string | undefined>(undefined);
+    const [editDialogVisible, setEditDialogVisible] = useState(false);
+
+    // Drag state for medication events (day view only)
+    const [isDragging, setIsDragging] = useState(false);
+
+    // Helper: snap Y position to half-hour intervals and return { hour, minutes }
+    const snapToHalfHour = (yPosition: number): { hour: number; minutes: number } => {
+        const totalMinutes = (yPosition / HOUR_HEIGHT) * 60;
+        const hour = Math.floor(totalMinutes / 60);
+        const minuteInHour = totalMinutes % 60;
+        // Snap to :00 or :30
+        const minutes = minuteInHour < 30 ? 0 : 30;
+        return { hour: Math.max(0, Math.min(23, hour)), minutes };
+    };
+
+    // Fetch events (from calendar_events table + generate from medications)
     const fetchEvents = useCallback(async () => {
-        if (!user?.id) return;
+        if (!user?.id || !supabase) return;
 
         try {
             const startDate = new Date(selectedDate);
@@ -49,7 +82,8 @@ export default function CalendarScreen() {
             const endDate = new Date(selectedDate);
             endDate.setDate(endDate.getDate() + 30);
 
-            const { data, error } = await supabase
+            // Fetch existing calendar events
+            const { data: calendarData, error: calendarError } = await supabase
                 .from('calendar_events')
                 .select('*')
                 .eq('user_id', user.id)
@@ -57,8 +91,108 @@ export default function CalendarScreen() {
                 .lte('scheduled_at', endDate.toISOString())
                 .order('scheduled_at', { ascending: true });
 
-            if (error) throw error;
-            setEvents(data || []);
+            if (calendarError) throw calendarError;
+
+            // Fetch VALID todo items (non-null frequency and duration) to filter out orphans
+            const { data: validTodos, error: todoError } = await supabase
+                .from('todo_items')
+                .select('id')
+                .eq('user_id', user.id)
+                .not('frequency_days', 'is', null)
+                .not('duration_days', 'is', null);
+
+            if (todoError) throw todoError;
+
+            const validTodoIds = new Set((validTodos as any[] || []).map(t => t.id));
+
+            // Filter calendar events:
+            // 1. Keep non-todo events
+            // 2. Keep todo events ONLY if they belong to a valid todo item
+            const filteredCalendarEvents = (calendarData || []).filter((e: any) => {
+                if (e.type !== 'todo') return true;
+                return e.todo_item_id && validTodoIds.has(e.todo_item_id);
+            });
+
+            // Also fetch active medications to generate events on-the-fly
+            const { data: medications, error: medError } = await supabase
+                .from('medications')
+                .select('*')
+                .eq('user_id', user.id)
+                .eq('is_active', true);
+
+            if (medError) throw medError;
+
+            // Generate medication events from frequency/duration if not already in calendar_events
+            const medicationEvents: AppCalendarEvent[] = [];
+
+            // Track which medications already have events in the database
+            const medsWithExistingEvents = new Set(
+                filteredCalendarEvents
+                    .filter((e: any) => e.type === 'medication' && e.medication_id)
+                    .map((e: any) => e.medication_id)
+            );
+
+            (medications || []).forEach((med: any) => {
+                // Skip if this medication already has events in the database
+                if (medsWithExistingEvents.has(med.id)) {
+                    console.log(`Medication: ${med.name} - already has events in DB, skipping generation`);
+                    return;
+                }
+
+                console.log(`Medication: ${med.name}, frequency=${med.frequency}, duration_days=${med.duration_days}, start_date=${med.start_date}, end_date=${med.end_date}`);
+
+                if (!med.frequency || med.frequency <= 0) {
+                    console.log(`  -> Skipping: no valid frequency`);
+                    return;
+                }
+
+                const medStartDate = med.start_date ? new Date(med.start_date) : new Date();
+                const durationDays = med.duration_days || 7;
+                const medEndDate = med.end_date ? new Date(med.end_date) : new Date(medStartDate.getTime() + durationDays * 24 * 60 * 60 * 1000);
+
+                console.log(`  -> medStartDate=${medStartDate.toISOString()}, medEndDate=${medEndDate.toISOString()}`);
+                console.log(`  -> Query range: ${startDate.toISOString()} to ${endDate.toISOString()}`);
+
+                // Generate events for each day based on frequency
+                const eventTimes: number[] = [];
+                let currentHour = 8; // Start at 8 AM instead of midnight for better UX
+                while (currentHour < 24) {
+                    eventTimes.push(currentHour);
+                    currentHour += med.frequency;
+                }
+
+                // Create events for each day in range
+                const current = new Date(Math.max(medStartDate.getTime(), startDate.getTime()));
+                const end = new Date(Math.min(medEndDate.getTime(), endDate.getTime()));
+
+                while (current <= end) {
+                    for (const hour of eventTimes) {
+                        const eventDateTime = new Date(current);
+                        eventDateTime.setHours(hour, 0, 0, 0);
+
+                        medicationEvents.push({
+                            id: `virtual-${med.id}-${eventDateTime.getTime()}`,
+                            title: `💊 ${med.name}`,
+                            description: `Take medication - Every ${med.frequency} hours`,
+                            type: 'medication',
+                            scheduled_at: eventDateTime.toISOString(),
+                            duration_minutes: 15,
+                            completed: false,
+                            medication_id: med.id,
+                        });
+                    }
+                    current.setDate(current.getDate() + 1);
+                }
+            });
+
+            // Combine and sort all events
+            const allEvents = [...filteredCalendarEvents, ...medicationEvents].sort((a, b) =>
+                new Date(a.scheduled_at).getTime() - new Date(b.scheduled_at).getTime()
+            );
+
+            console.log(`Calendar: Total events = ${allEvents.length}, from DB = ${filteredCalendarEvents.length}, generated = ${medicationEvents.length}`);
+
+            setEvents(allEvents as AppCalendarEvent[]);
         } catch (error) {
             console.error('Error fetching events:', error);
         } finally {
@@ -76,16 +210,31 @@ export default function CalendarScreen() {
         return () => clearInterval(interval);
     }, []);
 
-    // Scroll to current time on mount
+    // Scroll to current time when switching to day view
     useEffect(() => {
         if (viewMode === 'day' && scrollViewRef.current) {
             const hour = new Date().getHours();
-            const scrollY = Math.max(0, (hour - 2) * HOUR_HEIGHT);
+            const scrollY = Math.max(0, (hour - 1) * HOUR_HEIGHT); // Show 1 hour before current time
             setTimeout(() => {
                 scrollViewRef.current?.scrollTo({ y: scrollY, animated: true });
-            }, 300);
+            }, 100);
         }
     }, [viewMode]);
+
+    // Scroll to current time when screen comes into focus (from home/medication page)
+    useFocusEffect(
+        useCallback(() => {
+            // Wait for animations/transitions to complete before scrolling
+            const task = InteractionManager.runAfterInteractions(() => {
+                if (viewMode === 'day' && scrollViewRef.current) {
+                    const hour = new Date().getHours();
+                    const scrollY = Math.max(0, (hour - 1) * HOUR_HEIGHT);
+                    scrollViewRef.current?.scrollTo({ y: scrollY, animated: false });
+                }
+            });
+            return () => task.cancel();
+        }, [viewMode])
+    );
 
     const getEventColor = (type: string) => {
         switch (type) {
@@ -107,33 +256,302 @@ export default function CalendarScreen() {
         }
     };
 
-    const handleEventPress = (event: CalendarEvent) => {
-        Alert.alert(
-            event.title,
-            `${event.description || ''}\n\nTime: ${format(parseISO(event.scheduled_at), 'h:mm a')}\nStatus: ${event.completed ? 'Completed' : 'Pending'}`,
-            [
-                { text: 'Close', style: 'cancel' },
-                {
-                    text: event.completed ? 'Mark Incomplete' : 'Mark Complete',
-                    onPress: async () => {
-                        try {
-                            await supabase
-                                .from('calendar_events')
-                                .update({ completed: !event.completed } as any)
-                                .eq('id', event.id);
-                            fetchEvents();
-                        } catch (error) {
-                            console.error('Error updating event:', error);
+    const handleEventPress = (event: AppCalendarEvent) => {
+        if (event.type === 'todo') {
+            Alert.alert(
+                event.title,
+                `${event.description || ''}\nStatus: ${event.completed ? 'Completed' : 'Pending'}`,
+                [
+                    { text: 'Close', style: 'cancel' },
+                    {
+                        text: 'Edit Task',
+                        onPress: async () => {
+                            // Fetch full todo details to get frequency/duration
+                            if (event.todo_item_id && supabase) {
+                                const { data } = await supabase
+                                    .from('todo_items')
+                                    .select('*')
+                                    .eq('id', event.todo_item_id)
+                                    .single();
+
+                                const todoData = data as any;
+
+                                if (todoData) {
+                                    setEditTodoTitle(todoData.title);
+                                    setEditTodoFrequency(todoData.frequency_days ? String(todoData.frequency_days) : '');
+                                    setEditTodoDuration(todoData.duration_days ? String(todoData.duration_days) : '');
+                                    setEditingTodo({ ...event, frequency_days: todoData.frequency_days, duration_days: todoData.duration_days });
+                                    setEditDialogVisible(true);
+                                }
+                            }
                         }
                     },
-                },
-            ]
-        );
+                    {
+                        text: event.completed ? 'Mark Incomplete' : 'Mark Complete',
+                        onPress: async () => {
+                            if (supabase) {
+                                await supabase
+                                    .from('calendar_events')
+                                    .update({ completed: !event.completed } as any)
+                                    .eq('id', event.id);
+
+                                // Also update the todo item itself
+                                if (event.todo_item_id) {
+                                    await supabase
+                                        .from('todo_items')
+                                        .update({ completed: !event.completed } as any)
+                                        .eq('id', event.todo_item_id);
+                                }
+                                fetchEvents();
+                            }
+                        },
+                    },
+                    {
+                        text: 'Delete',
+                        style: 'destructive',
+                        onPress: () => {
+                            Alert.alert('Delete Task', 'Are you sure you want to delete this task?', [
+                                { text: 'Cancel', style: 'cancel' },
+                                {
+                                    text: 'Delete',
+                                    style: 'destructive',
+                                    onPress: async () => {
+                                        if (event.todo_item_id && supabase) {
+                                            // Delete Calendar Events first (foreign key might cascade, but be safe)
+                                            await supabase
+                                                .from('calendar_events')
+                                                .delete()
+                                                .eq('todo_item_id', event.todo_item_id);
+
+                                            // Delete Todo Item
+                                            await supabase
+                                                .from('todo_items')
+                                                .delete()
+                                                .eq('id', event.todo_item_id);
+
+                                            fetchEvents();
+                                        }
+                                    }
+                                }
+                            ]);
+                        }
+                    }
+                ]
+            );
+        } else {
+            Alert.alert(
+                event.title,
+                `${event.description || ''}\n\nTime: ${format(parseISO(event.scheduled_at), 'h:mm a')}\nStatus: ${event.completed ? 'Completed' : 'Pending'}`,
+                [
+                    { text: 'Close', style: 'cancel' },
+                    {
+                        text: event.completed ? 'Mark Incomplete' : 'Mark Complete',
+                        onPress: async () => {
+                            try {
+                                if (supabase) {
+                                    await supabase
+                                        .from('calendar_events')
+                                        .update({ completed: !event.completed } as any)
+                                        .eq('id', event.id);
+                                    fetchEvents();
+                                }
+                            } catch (error) {
+                                console.error('Error updating event:', error);
+                            }
+                        },
+                    },
+                ]
+            );
+        }
     };
 
-    const getEventsForDate = (date: string) => {
+    const saveTodoEdit = async () => {
+        if (!editingTodo || !editingTodo.todo_item_id) return;
+        setEditDialogVisible(false); // Close immediately
+
+        try {
+            const freq = editTodoFrequency ? parseInt(editTodoFrequency) : null;
+            const dur = editTodoDuration ? parseInt(editTodoDuration) : null;
+
+            // 1. Update Todo Item
+            if (supabase) {
+                const { error: updateError } = await supabase
+                    .from('todo_items')
+                    .update({
+                        title: editTodoTitle,
+                        frequency_days: freq,
+                        duration_days: dur
+                    } as any)
+                    .eq('id', editingTodo.todo_item_id);
+
+                if (updateError) throw updateError;
+
+                // 2. Regenerate Calendar Events (Delete old future events, Create new ones)
+                // Delete all future events for this todo
+                const { error: deleteError } = await supabase
+                    .from('calendar_events')
+                    .delete()
+                    .eq('todo_item_id', editingTodo.todo_item_id)
+                    .gte('scheduled_at', new Date().toISOString());
+
+                if (deleteError) throw deleteError;
+
+                // Create new events
+                const startDate = new Date(); // Start from today
+                const durationDays = dur || 1;
+                const frequencyDays = freq;
+
+                const calendarEvents: any[] = [];
+                // Same logic as upload.tsx
+                if (frequencyDays) {
+                    const endDate = new Date(startDate);
+                    endDate.setDate(endDate.getDate() + durationDays);
+                    let currentDate = new Date(startDate);
+                    let dayCount = 0;
+                    while (dayCount < durationDays) {
+                        // Only add if it's in the future (or today)
+                        if (currentDate >= new Date(new Date().setHours(0, 0, 0, 0))) {
+                            calendarEvents.push({
+                                user_id: user?.id,
+                                todo_item_id: editingTodo.todo_item_id,
+                                title: editTodoTitle,
+                                description: editingTodo.description,
+                                type: 'todo',
+                                source_type: 'todo',
+                                scheduled_at: currentDate.toISOString(),
+                                duration_minutes: 30,
+                                completed: false
+                            });
+                        }
+                        currentDate.setDate(currentDate.getDate() + frequencyDays);
+                        dayCount += frequencyDays;
+                    }
+                } else {
+                    // Single event if no frequency, only if it hasn't passed? 
+                    // Or update the existing one? Complex.
+                    // Let's assume user wants to reschedule to Today if they edit without frequency.
+                    calendarEvents.push({
+                        user_id: user?.id,
+                        todo_item_id: editingTodo.todo_item_id,
+                        title: editTodoTitle,
+                        description: editingTodo.description,
+                        type: 'todo',
+                        source_type: 'todo',
+                        scheduled_at: new Date().toISOString(), // Reset to today
+                        duration_minutes: 30,
+                        completed: false
+                    });
+                }
+
+                if (calendarEvents.length > 0) {
+                    await supabase
+                        .from('calendar_events')
+                        .insert(calendarEvents as any);
+                }
+
+                fetchEvents();
+            }
+        } catch (error) {
+            console.error('Error saving todo:', error);
+            Alert.alert('Error', 'Failed to save changes');
+        }
+    };
+
+    // Handle medication dose drag-and-drop (day view only)
+    const handleMedicationDrop = (event: AppCalendarEvent, newYPosition: number) => {
+        if (!supabase || !user?.id || !event.medication_id) return;
+
+        // 1. Snap to half-hour
+        const { hour, minutes } = snapToHalfHour(newYPosition);
+        const originalTime = parseISO(event.scheduled_at);
+        
+        // Create new time on the same date as the dragged event
+        const newTime = new Date(originalTime);
+        newTime.setHours(hour, minutes, 0, 0);
+
+        // 2. Calculate time delta (shift amount in milliseconds)
+        const timeDelta = newTime.getTime() - originalTime.getTime();
+        
+        // Skip if no actual change
+        if (timeDelta === 0) return;
+
+        console.log(`[Drag] Moving dose from ${format(originalTime, 'HH:mm')} to ${format(newTime, 'HH:mm')} (delta: ${timeDelta / 60000} min)`);
+
+        // 3. OPTIMISTIC UI UPDATE: Immediately update local state
+        const updatedEvents = events.map(e => {
+            // Only shift events for this medication that are >= the dragged event's original time
+            if (e.medication_id === event.medication_id) {
+                const eventTime = new Date(e.scheduled_at);
+                if (eventTime >= originalTime) {
+                    const shiftedTime = new Date(eventTime.getTime() + timeDelta);
+                    return { ...e, scheduled_at: shiftedTime.toISOString() };
+                }
+            }
+            return e;
+        });
+        setEvents(updatedEvents); // Instant UI update!
+
+        // 4. BACKGROUND DB SYNC: Update database without blocking UI
+        (async () => {
+            try {
+                // Get all calendar events for this medication >= original time
+                const { data: dbEvents, error: eventsError } = await supabase
+                    .from('calendar_events')
+                    .select('id, scheduled_at')
+                    .eq('medication_id', event.medication_id)
+                    .gte('scheduled_at', originalTime.toISOString())
+                    .order('scheduled_at', { ascending: true });
+
+                if (eventsError || !dbEvents) {
+                    console.error('Failed to fetch medication events:', eventsError);
+                    fetchEvents(); // Revert to DB state on error
+                    return;
+                }
+
+                // Build updates using TIME DELTA (not frequency recalculation)
+                const updates = dbEvents.map(ev => ({
+                    id: ev.id,
+                    scheduled_at: new Date(new Date(ev.scheduled_at).getTime() + timeDelta).toISOString()
+                }));
+
+                console.log(`[Drag] Updating ${updates.length} events in DB`);
+
+                // Batch update: update all events
+                for (const update of updates) {
+                    await supabase
+                        .from('calendar_events')
+                        .update({ scheduled_at: update.scheduled_at } as any)
+                        .eq('id', update.id);
+                }
+
+                // Update medications.schedule column with full schedule
+                const { data: allEvents } = await supabase
+                    .from('calendar_events')
+                    .select('scheduled_at')
+                    .eq('medication_id', event.medication_id)
+                    .order('scheduled_at', { ascending: true });
+
+                const fullSchedule = (allEvents || []).map(e => e.scheduled_at);
+
+                await supabase
+                    .from('medications')
+                    .update({ schedule: fullSchedule } as any)
+                    .eq('id', event.medication_id);
+
+                console.log(`[Drag] DB sync complete. Schedule has ${fullSchedule.length} timestamps`);
+
+            } catch (error) {
+                console.error('Error syncing to database:', error);
+                fetchEvents(); // Revert to DB state on error
+            }
+        })();
+    };
+
+    const getEventsForDate = (date: string): AppCalendarEvent[] => {
         return events.filter(event => {
             const eventDate = format(parseISO(event.scheduled_at), 'yyyy-MM-dd');
+            // Day View: Hide Todos
+            if (viewMode === 'day' && event.type === 'todo') return false;
             return eventDate === date;
         });
     };
@@ -151,6 +569,176 @@ export default function CalendarScreen() {
         return (hours + minutes / 60) * HOUR_HEIGHT;
     };
 
+    // Draggable Medication Card Component (day view only) - uses React Native PanResponder
+    // Edit mode activated by pencil icon, exit on drag complete or X icon press
+    const DraggableMedicationCard = ({ 
+        event, 
+        initialTop, 
+        leftOffset, 
+        eventWidth, 
+        eventHeight 
+    }: { 
+        event: AppCalendarEvent; 
+        initialTop: number; 
+        leftOffset: number; 
+        eventWidth: number; 
+        eventHeight: number;
+    }) => {
+        const pan = useRef(new Animated.Value(0)).current;
+        const [isEditMode, setIsEditMode] = useState(false);
+        const [isDraggingCard, setIsDraggingCard] = useState(false);
+        
+        // Use ref to avoid stale closure issues in panResponder
+        const isEditModeRef = useRef(isEditMode);
+        isEditModeRef.current = isEditMode;
+
+        // Extract medication name without dosage (format: "💊 MedName" or "💊 MedName 500mg")
+        const getMedicationName = (title: string) => {
+            // Remove emoji and get the name part (first word after emoji)
+            const parts = title.replace('💊', '').trim().split(' ');
+            return `💊 ${parts[0]}`;
+        };
+
+        // Enter edit mode - only disable scroll when actually dragging
+        const enterEditMode = () => {
+            setIsEditMode(true);
+        };
+
+        // Exit edit mode
+        const exitEditMode = useCallback(() => {
+            setIsEditMode(false);
+            setIsDraggingCard(false);
+            setIsDragging(false);
+            pan.setValue(0);
+        }, [pan]);
+
+        const panResponder = useMemo(() => PanResponder.create({
+            onStartShouldSetPanResponder: () => isEditModeRef.current && !event.completed,
+            onMoveShouldSetPanResponder: (_, gestureState) => {
+                // Only allow drag if in edit mode and moved enough
+                return isEditModeRef.current && !event.completed && (Math.abs(gestureState.dy) > 5 || Math.abs(gestureState.dx) > 5);
+            },
+            onPanResponderGrant: () => {
+                if (!isEditModeRef.current) return;
+                setIsDraggingCard(true);
+                setIsDragging(true); // Disable scroll only when drag starts
+                pan.setOffset((pan as any)._value || 0);
+                pan.setValue(0);
+            },
+            onPanResponderMove: (_, gestureState) => {
+                if (isEditModeRef.current) {
+                    pan.setValue(gestureState.dy);
+                }
+            },
+            onPanResponderRelease: (_, gestureState) => {
+                pan.flattenOffset();
+                setIsDragging(false); // Re-enable scroll
+                
+                // If minimal movement, don't treat as drag
+                if (Math.abs(gestureState.dx) < 5 && Math.abs(gestureState.dy) < 5) {
+                    setIsDraggingCard(false);
+                    pan.setValue(0);
+                    return;
+                }
+                
+                // Handle the drop
+                const newY = initialTop + gestureState.dy;
+                handleMedicationDrop(event, newY);
+                
+                // Reset position and exit edit mode
+                Animated.spring(pan, {
+                    toValue: 0,
+                    useNativeDriver: false,
+                }).start();
+                setIsEditMode(false);
+                setIsDraggingCard(false);
+                setIsDragging(false);
+            },
+            onPanResponderTerminate: () => {
+                setIsDraggingCard(false);
+                setIsDragging(false);
+                pan.setValue(0);
+            },
+        }), [event, initialTop, pan]);
+
+        const eventColor = getEventColor(event.type);
+        
+        return (
+            <Animated.View
+                {...panResponder.panHandlers}
+                style={[
+                    styles.eventCard,
+                    {
+                        top: initialTop,
+                        left: leftOffset,
+                        width: eventWidth - 4,
+                        height: eventHeight,
+                        backgroundColor: isEditMode ? eventColor + '30' : eventColor + '20',
+                        // Normal: solid left border; Edit: dashed all-around border
+                        borderLeftColor: isEditMode ? eventColor : eventColor,
+                        borderLeftWidth: isEditMode ? 2 : 3,
+                        borderRightWidth: isEditMode ? 2 : 0,
+                        borderTopWidth: isEditMode ? 2 : 0,
+                        borderBottomWidth: isEditMode ? 2 : 0,
+                        borderRightColor: eventColor,
+                        borderTopColor: eventColor,
+                        borderBottomColor: eventColor,
+                        borderStyle: isEditMode ? 'dashed' : 'solid',
+                        borderRadius: tokens.radius.sm,
+                        transform: [{ translateY: pan }],
+                        zIndex: isEditMode ? 100 : 1,
+                        elevation: isEditMode ? 10 : 2,
+                        opacity: event.completed ? 0.6 : 1,
+                    },
+                ]}
+            >
+                <View style={[
+                    styles.eventCardContent, 
+                    { 
+                        flexDirection: 'row',
+                        alignItems: 'center',
+                        justifyContent: 'space-between',
+                        paddingHorizontal: 4,
+                        paddingVertical: 2,
+                    }
+                ]}>
+                    <TouchableOpacity 
+                        style={{ flex: 1, marginRight: 4 }} 
+                        onPress={() => !isEditMode && handleEventPress(event)}
+                        disabled={isEditMode}
+                    >
+                        <Text
+                            variant="labelSmall"
+                            style={[
+                                { color: theme.colors.onSurface, fontSize: 11 },
+                                event.completed && styles.completedText,
+                            ]}
+                            numberOfLines={1}
+                            ellipsizeMode="tail"
+                        >
+                            {getMedicationName(event.title)}
+                        </Text>
+                    </TouchableOpacity>
+                    
+                    {/* Edit/Close icon */}
+                    {!event.completed && (
+                        <TouchableOpacity
+                            onPress={() => isEditMode ? exitEditMode() : enterEditMode()}
+                            hitSlop={{ top: 6, bottom: 6, left: 6, right: 6 }}
+                            style={{ padding: 1 }}
+                        >
+                            <MaterialCommunityIcons
+                                name={isEditMode ? 'close' : 'pencil'}
+                                size={12}
+                                color={isEditMode ? theme.colors.error : theme.colors.onSurfaceVariant}
+                            />
+                        </TouchableOpacity>
+                    )}
+                </View>
+            </Animated.View>
+        );
+    };
+
     // Day View Component
     const renderDayView = () => {
         const dayEvents = getEventsForDate(selectedDate);
@@ -161,8 +749,9 @@ export default function CalendarScreen() {
                 ref={scrollViewRef}
                 style={styles.dayScrollView}
                 showsVerticalScrollIndicator={false}
+                scrollEnabled={!isDragging}
             >
-                <View style={styles.dayGrid}>
+                    <View style={styles.dayGrid}>
                     {HOURS.map((hour) => (
                         <View key={hour} style={[styles.hourRow, { borderBottomColor: theme.colors.outlineVariant }]}>
                             <Text variant="labelSmall" style={[styles.hourLabel, { color: theme.colors.onSurfaceVariant }]}>
@@ -183,7 +772,7 @@ export default function CalendarScreen() {
                     {/* Events */}
                     {(() => {
                         // Group events by time slot to handle overlaps
-                        const eventsByTime: Record<string, CalendarEvent[]> = {};
+                        const eventsByTime: Record<string, AppCalendarEvent[]> = {};
                         dayEvents.forEach(event => {
                             const eventTime = parseISO(event.scheduled_at);
                             const hour = eventTime.getHours();
@@ -211,13 +800,33 @@ export default function CalendarScreen() {
                             const hour = eventTime.getHours();
                             const minutes = eventTime.getMinutes();
                             const top = (hour + minutes / 60) * HOUR_HEIGHT;
-                            const eventHeight = Math.max(40, (event.duration_minutes || 30) * (HOUR_HEIGHT / 60));
+                            
+                            // Reduced height for medications to fit half-hour slots
+                            const isMedication = event.type === 'medication';
+                            const eventHeight = isMedication 
+                                ? HOUR_HEIGHT / 2 - 4 // 26px for half-hour slots
+                                : Math.max(40, (event.duration_minutes || 30) * (HOUR_HEIGHT / 60));
 
                             const { column, totalColumns } = eventPositions[event.id];
                             const availableWidth = width - 55 - 16; // Total width minus left margin and right padding
                             const eventWidth = availableWidth / totalColumns;
                             const leftOffset = 55 + (column * eventWidth);
 
+                            // Use draggable card for medication events
+                            if (isMedication) {
+                                return (
+                                    <DraggableMedicationCard
+                                        key={event.id}
+                                        event={event}
+                                        initialTop={top}
+                                        leftOffset={leftOffset}
+                                        eventWidth={eventWidth}
+                                        eventHeight={eventHeight}
+                                    />
+                                );
+                            }
+
+                            // Regular card for non-medication events
                             return (
                                 <Card
                                     key={event.id}
@@ -333,7 +942,10 @@ export default function CalendarScreen() {
                                             {event.title}
                                         </Text>
                                         <Text variant="bodySmall" style={{ color: theme.colors.onSurfaceVariant }}>
-                                            {format(parseISO(event.scheduled_at), 'h:mm a')}
+                                            {event.type === 'todo'
+                                                ? format(parseISO(event.scheduled_at), 'MMM d') // Date only for todos
+                                                : format(parseISO(event.scheduled_at), 'h:mm a') // Time for others
+                                            }
                                         </Text>
                                     </View>
                                     <Chip
@@ -352,105 +964,109 @@ export default function CalendarScreen() {
         );
     };
 
-    // Month View Component (existing calendar)
+    // Month View Component (Custom Full Screen with Text)
     const renderMonthView = () => {
-        const markedDates: Record<string, any> = {};
-
-        events.forEach(event => {
-            const dateStr = format(parseISO(event.scheduled_at), 'yyyy-MM-dd');
-            if (!markedDates[dateStr]) {
-                markedDates[dateStr] = { dots: [] };
-            }
-            markedDates[dateStr].dots.push({
-                key: event.id,
-                color: getEventColor(event.type),
-            });
-        });
-
-        markedDates[selectedDate] = {
-            ...markedDates[selectedDate],
-            selected: true,
-            selectedColor: theme.colors.primary,
-        };
+        // Calculate cell height based on screen height to fill space
+        // Header (~50) + Toggle (~50) + Calendar header (~50) + Weekday labels (~30) + Tab bar (~80) + Margins (~60) = ~320px
+        // 6 rows max in a month - use smaller height to ensure all rows fit
+        const CELL_HEIGHT = Math.floor((height - 320) / 6);
 
         return (
-            <ScrollView style={styles.monthScrollView} showsVerticalScrollIndicator={false}>
+            <View style={styles.monthContainer}>
                 <RNCalendar
                     current={selectedDate}
-                    onDayPress={(day: DateData) => setSelectedDate(day.dateString)}
-                    markingType="multi-dot"
-                    markedDates={markedDates}
-                    theme={{
-                        backgroundColor: theme.colors.background,
-                        calendarBackground: theme.colors.background,
-                        textSectionTitleColor: theme.colors.onSurfaceVariant,
-                        selectedDayBackgroundColor: theme.colors.primary,
-                        selectedDayTextColor: theme.colors.onPrimary,
-                        todayTextColor: theme.colors.primary,
-                        dayTextColor: theme.colors.onBackground,
-                        textDisabledColor: theme.colors.outline,
-                        dotColor: theme.colors.primary,
-                        monthTextColor: theme.colors.onBackground,
-                        arrowColor: theme.colors.primary,
-                        textDayFontWeight: '500',
-                        textMonthFontWeight: '600',
-                        textDayHeaderFontWeight: '500',
+                    onDayPress={(day: DateData) => {
+                        setSelectedDate(day.dateString);
+                        setViewMode('week'); // Navigate to Week View
                     }}
-                    style={styles.calendar}
-                />
+                    hideExtraDays={false}
+                    enableSwipeMonths={true}
+                    theme={{
+                        'stylesheet.calendar.header': {
+                            header: {
+                                flexDirection: 'row',
+                                justifyContent: 'space-between',
+                                paddingLeft: 10,
+                                paddingRight: 10,
+                                marginTop: 6,
+                                alignItems: 'center'
+                            }
+                        }
+                    } as any}
+                    dayComponent={({ date, state }: { date?: any; state?: any }) => {
+                        if (!date) return <View />; // Handle undefined date
+                        const dateStr = date.dateString;
+                        const dayEvents = getEventsForDate(dateStr);
+                        const isSelected = dateStr === selectedDate;
+                        const isToday = dateStr === format(new Date(), 'yyyy-MM-dd');
+                        const isCurrentMonth = state !== 'disabled';
 
-                {/* Events for selected date */}
-                <View style={styles.monthEvents}>
-                    <Text variant="titleMedium" style={[styles.sectionTitle, { color: theme.colors.onBackground }]}>
-                        {format(parseISO(selectedDate), 'EEEE, MMMM d')}
-                    </Text>
-                    {getEventsForDate(selectedDate).length === 0 ? (
-                        <Card style={styles.emptyCard} mode="outlined">
-                            <Card.Content style={styles.emptyContent}>
-                                <MaterialCommunityIcons name="calendar-blank" size={32} color={theme.colors.outline} />
-                                <Text variant="bodyMedium" style={{ color: theme.colors.onSurfaceVariant, marginTop: tokens.spacing.sm }}>
-                                    No events scheduled
+                        return (
+                            <TouchableOpacity
+                                activeOpacity={0.7}
+                                onPress={() => {
+                                    setSelectedDate(dateStr);
+                                    setViewMode('week');
+                                }}
+                                style={[
+                                    styles.dayCell,
+                                    {
+                                        height: CELL_HEIGHT,
+                                        backgroundColor: isSelected
+                                            ? theme.colors.primaryContainer
+                                            : (isCurrentMonth ? theme.colors.surface : theme.colors.surfaceVariant),
+                                        borderColor: isToday ? theme.colors.primary : theme.colors.outlineVariant,
+                                        borderWidth: isToday ? 2 : 0.5,
+                                        opacity: isCurrentMonth ? 1 : 0.4
+                                    }
+                                ]}
+                            >
+                                <Text
+                                    style={[
+                                        styles.dayNumber,
+                                        {
+                                            color: isSelected
+                                                ? theme.colors.onPrimaryContainer
+                                                : isToday
+                                                    ? theme.colors.primary
+                                                    : (state === 'disabled' ? theme.colors.outline : theme.colors.onSurface),
+                                            fontWeight: isToday ? 'bold' : 'normal'
+                                        }
+                                    ]}
+                                >
+                                    {date.day}
                                 </Text>
-                            </Card.Content>
-                        </Card>
-                    ) : (
-                        getEventsForDate(selectedDate).map((event) => (
-                            <Card key={event.id} style={styles.listEventCard} mode="elevated" onPress={() => handleEventPress(event)}>
-                                <Card.Content style={styles.listEventContent}>
-                                    <View style={[styles.eventIcon, { backgroundColor: getEventColor(event.type) + '20' }]}>
-                                        <MaterialCommunityIcons
-                                            name={getEventIcon(event.type) as any}
-                                            size={24}
-                                            color={getEventColor(event.type)}
-                                        />
-                                    </View>
-                                    <View style={styles.eventInfo}>
-                                        <Text
-                                            variant="bodyLarge"
-                                            style={[
-                                                { color: theme.colors.onSurface },
-                                                event.completed && styles.completedText,
-                                            ]}
-                                        >
-                                            {event.title}
-                                        </Text>
-                                        <Text variant="bodySmall" style={{ color: theme.colors.onSurfaceVariant }}>
-                                            {format(parseISO(event.scheduled_at), 'h:mm a')}
-                                        </Text>
-                                    </View>
-                                    <Chip
-                                        compact
-                                        mode={event.completed ? 'flat' : 'outlined'}
-                                        style={event.completed ? { backgroundColor: theme.colors.secondaryContainer } : {}}
-                                    >
-                                        {event.completed ? 'Done' : 'Mark'}
-                                    </Chip>
-                                </Card.Content>
-                            </Card>
-                        ))
-                    )}
-                </View>
-            </ScrollView>
+
+                                <View style={styles.dayEventsContainer}>
+                                    {/* Medication Count */}
+                                    {(() => {
+                                        const medCount = new Set(dayEvents.filter((e: AppCalendarEvent) => e.type === 'medication').map((e: AppCalendarEvent) => e.medication_id || e.title)).size;
+                                        const todoCount = new Set(dayEvents.filter((e: AppCalendarEvent) => e.type === 'todo').map((e: AppCalendarEvent) => e.todo_item_id || e.title)).size;
+
+                                        return (
+                                            <View style={{ flexDirection: 'column', gap: 2 }}>
+                                                {medCount > 0 && (
+                                                    <View style={{ flexDirection: 'row', alignItems: 'center', gap: 2 }}>
+                                                        <MaterialCommunityIcons name="pill" size={12} color={theme.colors.primary} />
+                                                        <Text style={{ fontSize: 11, fontWeight: '600', color: theme.colors.primary }}>x {medCount}</Text>
+                                                    </View>
+                                                )}
+                                                {todoCount > 0 && (
+                                                    <View style={{ flexDirection: 'row', alignItems: 'center', gap: 2 }}>
+                                                        <MaterialCommunityIcons name="checkbox-marked-circle-outline" size={12} color={theme.colors.secondary} />
+                                                        <Text style={{ fontSize: 11, fontWeight: '600', color: theme.colors.secondary }}>x {todoCount}</Text>
+                                                    </View>
+                                                )}
+                                            </View>
+                                        );
+                                    })()}
+                                </View>
+                            </TouchableOpacity>
+                        );
+                    }}
+                    style={styles.fullScreenCalendar}
+                />
+            </View>
         );
     };
 
@@ -518,6 +1134,44 @@ export default function CalendarScreen() {
                     {viewMode === 'month' && renderMonthView()}
                 </>
             )}
+            {/* Edit Todo Dialog */}
+            <Portal>
+                <Dialog visible={editDialogVisible} onDismiss={() => setEditDialogVisible(false)}>
+                    <Dialog.Title>Edit Task</Dialog.Title>
+                    <Dialog.Content>
+                        <View>
+                            <TextInput
+                                label="Title"
+                                value={editTodoTitle}
+                                onChangeText={setEditTodoTitle}
+                                mode="outlined"
+                                style={{ marginBottom: 12 }}
+                            />
+                            <TextInput
+                                label="Frequency (days)"
+                                value={editTodoFrequency}
+                                onChangeText={setEditTodoFrequency}
+                                mode="outlined"
+                                keyboardType="numeric"
+                                placeholder="e.g. 1 for daily"
+                                style={{ marginBottom: 12 }}
+                            />
+                            <TextInput
+                                label="Duration (days)"
+                                value={editTodoDuration}
+                                onChangeText={setEditTodoDuration}
+                                mode="outlined"
+                                keyboardType="numeric"
+                                placeholder="e.g. 7"
+                            />
+                        </View>
+                    </Dialog.Content>
+                    <Dialog.Actions>
+                        <Button onPress={() => setEditDialogVisible(false)}>Cancel</Button>
+                        <Button onPress={saveTodoEdit}>Save</Button>
+                    </Dialog.Actions>
+                </Dialog>
+            </Portal>
         </SafeAreaView>
     );
 }
@@ -628,17 +1282,51 @@ const styles = StyleSheet.create({
         paddingBottom: 100,
     },
     // Month View
-    monthScrollView: {
+    monthContainer: {
         flex: 1,
     },
-    calendar: {
-        marginHorizontal: tokens.spacing.md,
-        borderRadius: tokens.radius.lg,
+    fullScreenCalendar: {
+        width: width,
+        // height is managed by content
     },
-    monthEvents: {
-        paddingHorizontal: tokens.spacing.lg,
-        paddingTop: tokens.spacing.lg,
-        paddingBottom: 100,
+    dayCell: {
+        width: (width - 16) / 7,
+        borderRadius: 4,
+        padding: 4,
+        justifyContent: 'flex-start',
+        alignItems: 'flex-start',
+    },
+    dayCellContent: {
+        flex: 1,
+        width: '100%',
+    },
+    dayNumber: {
+        fontSize: 14,
+        fontWeight: '700',
+        marginBottom: 4,
+        textAlign: 'center',
+        width: '100%',
+    },
+    dayEventsContainer: {
+        flex: 1,
+        gap: 1,
+        width: '100%',
+    },
+    miniEventPill: {
+        borderRadius: 2,
+        paddingHorizontal: 2,
+        paddingVertical: 1,
+        justifyContent: 'center',
+    },
+    miniEventText: {
+        fontSize: 8,
+        lineHeight: 10,
+        fontWeight: '500',
+    },
+    moreEventsText: {
+        fontSize: 8,
+        fontWeight: '500',
+        marginLeft: 2,
     },
     // Shared
     sectionTitle: {

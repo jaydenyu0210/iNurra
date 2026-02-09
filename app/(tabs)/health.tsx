@@ -1,16 +1,17 @@
-import { useState, useEffect, useCallback } from 'react';
+import { useState, useEffect, useCallback, useRef } from 'react';
 import { useFocusEffect } from '@react-navigation/native';
-import { View, StyleSheet, ScrollView, Dimensions, Text as RNText, Alert } from 'react-native';
+import { View, StyleSheet, ScrollView, Dimensions, Text as RNText, Alert, DeviceEventEmitter } from 'react-native';
 import { Text, Card, Button, useTheme, IconButton, FAB, Chip, ActivityIndicator } from 'react-native-paper';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { useRouter } from 'expo-router';
 import { MaterialCommunityIcons } from '@expo/vector-icons';
 import { format, subDays } from 'date-fns';
+import { Audio } from 'expo-av';
 import { tokens } from '../../src/theme';
 import Svg, { Path, Circle } from 'react-native-svg';
 import { supabase } from '../../src/services/supabase';
 import { useAuth } from '../../src/hooks';
-import { deleteHealthMetric } from '../../src/services/api';
+import { deleteHealthMetric, generateSpeech } from '../../src/services/api';
 
 const { width } = Dimensions.get('window');
 
@@ -33,12 +34,13 @@ interface SimpleLineChartProps {
     lineColor: string;
     fillColor: string;
     labelColor: string;
+    unit?: string;
 }
 
-function SimpleLineChart({ data, labels, width, height, lineColor, fillColor, labelColor }: SimpleLineChartProps) {
+function SimpleLineChart({ data, labels, width, height, lineColor, fillColor, labelColor, unit }: SimpleLineChartProps) {
     if (data.length === 0) return null;
 
-    const padding = { top: 20, bottom: 30, left: 40, right: 10 };
+    const padding = { top: 20, bottom: 40, left: 50, right: 10 };
     const chartWidth = width - padding.left - padding.right;
     const chartHeight = height - padding.top - padding.bottom;
 
@@ -64,17 +66,17 @@ function SimpleLineChart({ data, labels, width, height, lineColor, fillColor, la
         return { value, y };
     });
 
-    return (
-        <View style={{ width, height, position: 'relative' }}>
-            {/* Y-axis labels */}
-            <View style={{ position: 'absolute', left: 0, top: 0, bottom: padding.bottom, width: padding.left, justifyContent: 'space-between', paddingTop: padding.top, paddingBottom: padding.bottom }}>
-                {yAxisLabels.map((label, i) => (
-                    <RNText key={i} style={{ fontSize: 10, color: labelColor, textAlign: 'right', paddingRight: 5 }}>
-                        {label.value.toFixed(1)}
-                    </RNText>
-                ))}
-            </View>
+    // X-axis labels - only show 3 labels (first, middle, last)
+    const xLabelsToShow = labels.filter((_, i) => i === 0 || i === labels.length - 1 || i === Math.floor(labels.length / 2));
 
+    return (
+        <View style={{ width, height }}>
+            {/* Unit label at top of Y-axis */}
+            {unit && (
+                <RNText style={{ position: 'absolute', left: 2, top: 2, fontSize: 8, color: labelColor }}>
+                    ({unit})
+                </RNText>
+            )}
             <Svg width={width} height={height}>
                 {/* Y-axis line */}
                 <Path d={`M ${padding.left} ${padding.top} L ${padding.left} ${height - padding.bottom}`} stroke={labelColor} strokeWidth={1} opacity={0.3} />
@@ -88,10 +90,18 @@ function SimpleLineChart({ data, labels, width, height, lineColor, fillColor, la
                     <Circle key={i} cx={p.x} cy={p.y} r={4} fill={lineColor} />
                 ))}
             </Svg>
+            {/* Y-axis labels */}
+            <View style={{ position: 'absolute', left: 0, top: padding.top, height: chartHeight, justifyContent: 'space-between' }}>
+                {yAxisLabels.reverse().map((label, i) => (
+                    <RNText key={i} style={{ fontSize: 9, color: labelColor, textAlign: 'right', width: padding.left - 5, paddingRight: 5 }}>
+                        {label.value.toFixed(0)}
+                    </RNText>
+                ))}
+            </View>
             {/* X-axis labels */}
-            <View style={{ flexDirection: 'row', justifyContent: 'space-between', paddingHorizontal: padding.left, marginTop: 5 }}>
-                {labels.filter((_, i) => i === 0 || i === labels.length - 1 || i === Math.floor(labels.length / 2)).map((label, i) => (
-                    <RNText key={i} style={{ fontSize: 10, color: labelColor }}>{label}</RNText>
+            <View style={{ position: 'absolute', bottom: 5, left: padding.left, right: padding.right, flexDirection: 'row', justifyContent: 'space-between' }}>
+                {xLabelsToShow.map((label, i) => (
+                    <RNText key={i} style={{ fontSize: 9, color: labelColor }}>{label}</RNText>
                 ))}
             </View>
         </View>
@@ -141,8 +151,21 @@ export default function HealthScreen() {
     useFocusEffect(
         useCallback(() => {
             fetchMetrics();
+            return () => {
+                stopSpeaking();
+            };
         }, [fetchMetrics])
     );
+
+    // Listen for global stop speaking events
+    useEffect(() => {
+        const subscription = DeviceEventEmitter.addListener('STOP_SPEAKING', () => {
+            stopSpeaking();
+        });
+        return () => {
+            subscription.remove();
+        };
+    }, []);
 
     const handleDelete = (metricId: string, metricType: string) => {
         Alert.alert(
@@ -166,6 +189,71 @@ export default function HealthScreen() {
                 },
             ]
         );
+    };
+
+    // TTS state and functions
+    const [speakingMetricId, setSpeakingMetricId] = useState<string | null>(null);
+    const currentSoundRef = useRef<Audio.Sound | null>(null);
+
+    // Cleanup audio on unmount
+    useEffect(() => {
+        return () => {
+            if (currentSoundRef.current) {
+                currentSoundRef.current.unloadAsync();
+            }
+        };
+    }, []);
+
+    const stopSpeaking = async () => {
+        if (currentSoundRef.current) {
+            try {
+                await currentSoundRef.current.stopAsync();
+                await currentSoundRef.current.unloadAsync();
+            } catch (e) {
+                console.log('Error stopping sound:', e);
+            }
+            currentSoundRef.current = null;
+        }
+        setSpeakingMetricId(null);
+    };
+
+    const speakMetric = async (metric: HealthMetric) => {
+        if (speakingMetricId === metric.id) {
+            await stopSpeaking();
+            return;
+        }
+
+        try {
+            await stopSpeaking();
+            setSpeakingMetricId(metric.id);
+
+            await Audio.setAudioModeAsync({
+                allowsRecordingIOS: false,
+                playsInSilentModeIOS: true,
+            });
+
+            const textToSpeak = `${metric.metric_type}: ${metric.value} ${metric.unit}, recorded on ${format(new Date(metric.recorded_at), 'MMMM d, yyyy')} at ${format(new Date(metric.recorded_at), 'h:mm a')}`;
+
+            const { audioContent } = await generateSpeech(textToSpeak);
+            const { sound } = await Audio.Sound.createAsync(
+                { uri: `data:audio/mp3;base64,${audioContent}` },
+                { shouldPlay: true }
+            );
+
+            currentSoundRef.current = sound;
+
+            sound.setOnPlaybackStatusUpdate((status) => {
+                if (status.isLoaded && status.didJustFinish) {
+                    currentSoundRef.current = null;
+                    setSpeakingMetricId(null);
+                    sound.unloadAsync();
+                }
+            });
+        } catch (error) {
+            console.error('TTS Error:', error);
+            setSpeakingMetricId(null);
+            Alert.alert('Error', 'Failed to play audio');
+        }
     };
 
     // Group metrics by type
@@ -250,15 +338,15 @@ export default function HealthScreen() {
                                         styles.metricCard,
                                         isSelected && { borderColor: theme.colors.primary, borderWidth: 2 },
                                     ]}
-                                    mode="elevated"
+                                    mode="contained"
                                     onPress={() => setSelectedMetricType(type)}
                                 >
                                     <Card.Content style={styles.metricCardContent}>
-                                        <Text variant="labelMedium" style={{ color: theme.colors.onSurfaceVariant }}>
+                                        <Text variant="labelMedium" style={{ color: theme.colors.onSurfaceVariant, minHeight: 32 }}>
                                             {type}
                                         </Text>
                                         {average && (
-                                            <View style={styles.metricValueRow}>
+                                            <View>
                                                 <Text variant="headlineSmall" style={{ color: theme.colors.onSurface, fontWeight: '600' }}>
                                                     {average.value.toFixed(1)}
                                                 </Text>
@@ -316,6 +404,7 @@ export default function HealthScreen() {
                                         lineColor={theme.colors.primary}
                                         fillColor={theme.colors.primaryContainer}
                                         labelColor={theme.colors.onSurfaceVariant}
+                                        unit={selectedMetrics[0]?.unit}
                                     />
                                 </Card.Content>
                             </Card>
@@ -345,12 +434,12 @@ export default function HealthScreen() {
                                         </Text>
                                     </View>
                                     <IconButton
-                                        icon="delete-outline"
+                                        icon={speakingMetricId === metric.id ? 'stop' : 'volume-high'}
                                         size={20}
-                                        iconColor={theme.colors.error}
+                                        iconColor={theme.colors.primary}
                                         onPress={(e) => {
                                             e.stopPropagation();
-                                            handleDelete(metric.id, metric.metric_type);
+                                            speakMetric(metric);
                                         }}
                                     />
                                 </Card.Content>

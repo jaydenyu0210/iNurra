@@ -1,6 +1,6 @@
 import { useState, useEffect } from 'react';
-import { View, StyleSheet, ScrollView, Image, Dimensions, ActivityIndicator, Alert } from 'react-native';
-import { Text, Card, useTheme, IconButton } from 'react-native-paper';
+import { View, StyleSheet, ScrollView, Image, Dimensions, ActivityIndicator, Alert, KeyboardAvoidingView, Platform, Keyboard } from 'react-native';
+import { Text, Card, useTheme, IconButton, Button, Portal, Dialog, TextInput } from 'react-native-paper';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { useRouter, useLocalSearchParams } from 'expo-router';
 import { MaterialCommunityIcons } from '@expo/vector-icons';
@@ -21,6 +21,10 @@ interface Medication {
     start_date?: string;
     end_date?: string;
     duration_days?: number;
+    indication?: string;
+    precaution?: string;
+    monitoring_recommendation?: string;
+    summary?: string;
     document_id?: string;
     created_at: string;
 }
@@ -35,6 +39,32 @@ export default function MedicationDetailScreen() {
     const [imageUrl, setImageUrl] = useState<string | null>(null);
     const [loading, setLoading] = useState(true);
     const [error, setError] = useState<string | null>(null);
+    const [editDialogVisible, setEditDialogVisible] = useState(false);
+    const [editDosage, setEditDosage] = useState('');
+    const [editFrequency, setEditFrequency] = useState('');
+
+    const [editDuration, setEditDuration] = useState('');
+    const [isKeyboardVisible, setKeyboardVisible] = useState(false);
+
+    useEffect(() => {
+        const keyboardDidShowListener = Keyboard.addListener(
+            'keyboardDidShow',
+            () => {
+                setKeyboardVisible(true);
+            }
+        );
+        const keyboardDidHideListener = Keyboard.addListener(
+            'keyboardDidHide',
+            () => {
+                setKeyboardVisible(false);
+            }
+        );
+
+        return () => {
+            keyboardDidHideListener.remove();
+            keyboardDidShowListener.remove();
+        };
+    }, []);
 
     useEffect(() => {
         async function fetchMedication() {
@@ -62,11 +92,11 @@ export default function MedicationDetailScreen() {
                 setMedication(med as any);
 
                 // Fetch document and get image if document_id exists
-                if (med.document_id) {
+                if ((med as any)?.document_id) {
                     const { data: doc, error: docError } = await supabase
                         .from('documents')
                         .select('storage_path')
-                        .eq('id', med.document_id)
+                        .eq('id', (med as any).document_id)
                         .single();
 
                     if (!docError && doc?.storage_path) {
@@ -102,7 +132,7 @@ export default function MedicationDetailScreen() {
 
     const handleDelete = () => {
         if (!medication) return;
-        
+
         Alert.alert(
             'Delete Medication',
             `Are you sure you want to delete "${medication.name}"?`,
@@ -172,6 +202,16 @@ export default function MedicationDetailScreen() {
                     {medication.name}
                 </Text>
                 <IconButton
+                    icon="pencil-outline"
+                    size={24}
+                    onPress={() => {
+                        setEditDosage(medication.dosage || '');
+                        setEditFrequency(medication.frequency?.toString() || '');
+                        setEditDuration(medication.duration_days?.toString() || '');
+                        setEditDialogVisible(true);
+                    }}
+                />
+                <IconButton
                     icon="delete-outline"
                     iconColor={theme.colors.error}
                     size={24}
@@ -195,7 +235,7 @@ export default function MedicationDetailScreen() {
                 <Card style={styles.detailsCard} mode="elevated">
                     <Card.Content>
                         <View style={styles.detailRow}>
-                            <Text variant="labelMedium" style={{ color: theme.colors.onSurfaceVariant }}>
+                            <Text variant="labelLarge" style={{ color: theme.colors.primary, marginBottom: 4 }}>
                                 Name
                             </Text>
                             <Text variant="bodyLarge" style={{ color: theme.colors.onSurface }}>
@@ -203,9 +243,28 @@ export default function MedicationDetailScreen() {
                             </Text>
                         </View>
 
+
+
+                        {medication.indication && (
+                            <View style={styles.detailRow}>
+                                <Text variant="labelLarge" style={{ color: theme.colors.primary, marginBottom: 4 }}>
+                                    Indication
+                                </Text>
+                                {(() => {
+                                    const sentences = medication.indication.split(/(?<=[.!?])\s+/).filter(Boolean);
+                                    if (sentences.length <= 1) {
+                                        return <Text variant="bodyLarge" style={{ color: theme.colors.onSurface }}>{medication.indication}</Text>;
+                                    }
+                                    return sentences.map((s: string, i: number) => (
+                                        <Text key={i} variant="bodyLarge" style={{ color: theme.colors.onSurface }}>• {s.trim()}</Text>
+                                    ));
+                                })()}
+                            </View>
+                        )}
+
                         {medication.dosage && (
                             <View style={styles.detailRow}>
-                                <Text variant="labelMedium" style={{ color: theme.colors.onSurfaceVariant }}>
+                                <Text variant="labelLarge" style={{ color: theme.colors.primary, marginBottom: 4 }}>
                                     Dosage
                                 </Text>
                                 <Text variant="bodyLarge" style={{ color: theme.colors.onSurface }}>
@@ -214,64 +273,9 @@ export default function MedicationDetailScreen() {
                             </View>
                         )}
 
-                        {medication.frequency && (
-                            <View style={styles.detailRow}>
-                                <Text variant="labelMedium" style={{ color: theme.colors.onSurfaceVariant }}>
-                                    Frequency
-                                </Text>
-                                <Text variant="bodyLarge" style={{ color: theme.colors.onSurface }}>
-                                    Every {medication.frequency} hours
-                                </Text>
-                            </View>
-                        )}
-
-                        {medication.quantity && (
-                            <View style={styles.detailRow}>
-                                <Text variant="labelMedium" style={{ color: theme.colors.onSurfaceVariant }}>
-                                    Quantity
-                                </Text>
-                                <Text variant="bodyLarge" style={{ color: theme.colors.onSurface }}>
-                                    {medication.quantity}
-                                </Text>
-                            </View>
-                        )}
-
-                        {medication.duration_days && (
-                            <View style={styles.detailRow}>
-                                <Text variant="labelMedium" style={{ color: theme.colors.onSurfaceVariant }}>
-                                    Duration
-                                </Text>
-                                <Text variant="bodyLarge" style={{ color: theme.colors.onSurface }}>
-                                    {medication.duration_days} days
-                                </Text>
-                            </View>
-                        )}
-
-                        {medication.start_date && (
-                            <View style={styles.detailRow}>
-                                <Text variant="labelMedium" style={{ color: theme.colors.onSurfaceVariant }}>
-                                    Start Date
-                                </Text>
-                                <Text variant="bodyLarge" style={{ color: theme.colors.onSurface }}>
-                                    {formatDate(medication.start_date)}
-                                </Text>
-                            </View>
-                        )}
-
-                        {medication.end_date && (
-                            <View style={styles.detailRow}>
-                                <Text variant="labelMedium" style={{ color: theme.colors.onSurfaceVariant }}>
-                                    End Date
-                                </Text>
-                                <Text variant="bodyLarge" style={{ color: theme.colors.onSurface }}>
-                                    {formatDate(medication.end_date)}
-                                </Text>
-                            </View>
-                        )}
-
                         {medication.instructions && (
                             <View style={styles.detailRow}>
-                                <Text variant="labelMedium" style={{ color: theme.colors.onSurfaceVariant }}>
+                                <Text variant="labelLarge" style={{ color: theme.colors.primary, marginBottom: 4 }}>
                                     Instructions
                                 </Text>
                                 <Text variant="bodyLarge" style={{ color: theme.colors.onSurface }}>
@@ -280,17 +284,129 @@ export default function MedicationDetailScreen() {
                             </View>
                         )}
 
+                        {medication.precaution && (
+                            <View style={styles.detailRow}>
+                                <Text variant="labelLarge" style={{ color: theme.colors.primary, marginBottom: 4 }}>
+                                    Precaution
+                                </Text>
+                                {(() => {
+                                    const sentences = medication.precaution.split(/(?<=[.!?])\s+/).filter(Boolean);
+                                    if (sentences.length <= 1) {
+                                        return <Text variant="bodyLarge" style={{ color: theme.colors.onSurface }}>{medication.precaution}</Text>;
+                                    }
+                                    return sentences.map((s: string, i: number) => (
+                                        <Text key={i} variant="bodyLarge" style={{ color: theme.colors.onSurface }}>• {s.trim()}</Text>
+                                    ));
+                                })()}
+                            </View>
+                        )}
+
+                        {medication.monitoring_recommendation && (
+                            <View style={styles.detailRow}>
+                                <Text variant="labelLarge" style={{ color: theme.colors.primary, marginBottom: 4 }}>
+                                    Monitoring Recommendation
+                                </Text>
+                                {(() => {
+                                    const sentences = medication.monitoring_recommendation.split(/(?<=[.!?])\s+/).filter(Boolean);
+                                    if (sentences.length <= 1) {
+                                        return <Text variant="bodyLarge" style={{ color: theme.colors.onSurface }}>{medication.monitoring_recommendation}</Text>;
+                                    }
+                                    return sentences.map((s: string, i: number) => (
+                                        <Text key={i} variant="bodyLarge" style={{ color: theme.colors.onSurface }}>• {s.trim()}</Text>
+                                    ));
+                                })()}
+                            </View>
+                        )}
+
+                        {/* Recorded At */}
                         <View style={styles.detailRow}>
-                            <Text variant="labelMedium" style={{ color: theme.colors.onSurfaceVariant }}>
-                                Added
+                            <Text variant="labelLarge" style={{ color: theme.colors.primary, marginBottom: 4 }}>
+                                Recorded At
                             </Text>
-                            <Text variant="bodySmall" style={{ color: theme.colors.onSurfaceVariant }}>
-                                {formatDate(medication.created_at)}
+                            <Text variant="bodyMedium" style={{ color: theme.colors.onSurface }}>
+                                {new Date(medication.created_at).toLocaleDateString('en-US', { year: 'numeric', month: 'long', day: 'numeric', hour: '2-digit', minute: '2-digit' })}
                             </Text>
                         </View>
+
+                        <Button
+                            mode="contained"
+                            onPress={() => router.push({ pathname: '/(tabs)/calendar', params: { initialViewMode: 'month' } })}
+                            style={{ marginTop: tokens.spacing.md }}
+                            icon="calendar"
+                        >
+                            View in Calendar
+                        </Button>
                     </Card.Content>
                 </Card>
             </ScrollView>
+
+            {/* Edit Dialog */}
+            <Portal>
+                <Dialog
+                    visible={editDialogVisible}
+                    onDismiss={() => setEditDialogVisible(false)}
+                    style={isKeyboardVisible ? { transform: [{ translateY: -160 }] } : undefined}
+                >
+                    <Dialog.Title style={{ fontSize: 18 }}>Edit Medication</Dialog.Title>
+                    <Dialog.ScrollArea>
+                        <KeyboardAvoidingView behavior={Platform.OS === 'ios' ? 'padding' : 'height'}>
+                            <ScrollView contentContainerStyle={{ paddingVertical: 12 }}>
+                                <TextInput
+                                    label="Dosage"
+                                    value={editDosage}
+                                    onChangeText={setEditDosage}
+                                    mode="outlined"
+                                    style={{ marginBottom: 8, height: 48 }}
+                                    contentStyle={{ paddingTop: 0, paddingBottom: 0 }}
+                                />
+                                <TextInput
+                                    label="Frequency (hours)"
+                                    value={editFrequency}
+                                    onChangeText={setEditFrequency}
+                                    mode="outlined"
+                                    keyboardType="numeric"
+                                    style={{ marginBottom: 8, height: 48 }}
+                                    contentStyle={{ paddingTop: 0, paddingBottom: 0 }}
+                                />
+                                <TextInput
+                                    label="Duration (days)"
+                                    value={editDuration}
+                                    onChangeText={setEditDuration}
+                                    mode="outlined"
+                                    keyboardType="numeric"
+                                    style={{ height: 48 }}
+                                    contentStyle={{ paddingTop: 0, paddingBottom: 0 }}
+                                />
+                            </ScrollView>
+                        </KeyboardAvoidingView>
+                    </Dialog.ScrollArea>
+                    <Dialog.Actions>
+                        <Button onPress={() => setEditDialogVisible(false)}>Cancel</Button>
+                        <Button onPress={async () => {
+                            try {
+                                const { error: updateError } = await supabase
+                                    .from('medications')
+                                    .update({
+                                        dosage: editDosage,
+                                        frequency: editFrequency ? parseFloat(editFrequency) : null,
+                                        duration_days: editDuration ? parseInt(editDuration) : null,
+                                    })
+                                    .eq('id', medication.id);
+                                if (updateError) throw updateError;
+                                setMedication({
+                                    ...medication,
+                                    dosage: editDosage,
+                                    frequency: editFrequency ? parseFloat(editFrequency) : medication.frequency,
+                                    duration_days: editDuration ? parseInt(editDuration) : medication.duration_days,
+                                });
+                                setEditDialogVisible(false);
+                            } catch (err) {
+                                Alert.alert('Error', 'Failed to update medication');
+                            }
+                        }}>Save</Button>
+                    </Dialog.Actions>
+                </Dialog>
+            </Portal>
         </SafeAreaView>
     );
 }

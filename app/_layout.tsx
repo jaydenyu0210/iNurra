@@ -8,7 +8,7 @@ import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { View, StyleSheet } from 'react-native';
 import { useAuth } from '../src/hooks';
 import { lightTheme } from '../src/theme';
-import { GlobalFAB } from '../src/components/GlobalFAB';
+import { AppFooter } from '../src/components/AppFooter';
 
 const queryClient = new QueryClient();
 
@@ -54,6 +54,9 @@ function AuthProvider({ children }: { children: React.ReactNode }) {
 import { GestureHandlerRootView } from 'react-native-gesture-handler';
 
 export default function RootLayout() {
+    const segments = useSegments();
+    const hideFooter = segments[0] === '(auth)';
+
     return (
         <QueryClientProvider client={queryClient}>
             <SafeAreaProvider>
@@ -67,7 +70,7 @@ export default function RootLayout() {
                                     <Stack.Screen name="documents" options={{ headerShown: false }} />
                                     <Stack.Screen name="chat" options={{ headerShown: false }} />
                                 </Stack>
-                                <GlobalFAB />
+                                {!hideFooter && <AppFooter />}
                             </View>
                         </AuthProvider>
                     </PaperProvider>

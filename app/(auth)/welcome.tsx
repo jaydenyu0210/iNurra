@@ -14,37 +14,16 @@ export default function WelcomeScreen() {
                 {/* Hero Section */}
                 <View style={styles.hero}>
                     <View style={[styles.iconContainer, { backgroundColor: theme.colors.primaryContainer }]}>
-                        <Text style={[styles.icon, { color: theme.colors.primary }]}>💊</Text>
+                        <Image source={require('../../assets/icon.png')} style={styles.iconImage} resizeMode="contain" />
                     </View>
                     <Text variant="displaySmall" style={[styles.title, { color: theme.colors.onBackground }]}>
-                        HealthCompanion
+                        iNurra
                     </Text>
                     <Text variant="bodyLarge" style={[styles.subtitle, { color: theme.colors.onSurfaceVariant }]}>
-                        Your personal health assistant that helps you understand your medical records and medications
-                    </Text>
+                        Your personal health assistant that helps you track and understand your medical records                 </Text>
                 </View>
 
-                {/* Features List */}
-                <View style={styles.features}>
-                    <FeatureItem
-                        emoji="📋"
-                        title="Understand Your Records"
-                        description="Upload prescriptions, test results, and doctor notes"
-                        theme={theme}
-                    />
-                    <FeatureItem
-                        emoji="💬"
-                        title="Ask Questions"
-                        description="Get personalized answers about your health"
-                        theme={theme}
-                    />
-                    <FeatureItem
-                        emoji="📅"
-                        title="Stay on Track"
-                        description="Never miss a medication or appointment"
-                        theme={theme}
-                    />
-                </View>
+
             </View>
 
             {/* CTA Button */}
@@ -106,15 +85,16 @@ const styles = StyleSheet.create({
         marginBottom: tokens.spacing.xl,
     },
     iconContainer: {
-        width: 80,
-        height: 80,
+        width: 120,
+        height: 120,
         borderRadius: tokens.radius.xl,
         alignItems: 'center',
         justifyContent: 'center',
         marginBottom: tokens.spacing.lg,
     },
-    icon: {
-        fontSize: 40,
+    iconImage: {
+        width: 80,
+        height: 80,
     },
     title: {
         fontWeight: '600',
@@ -144,7 +124,7 @@ const styles = StyleSheet.create({
     },
     cta: {
         paddingHorizontal: tokens.spacing.lg,
-        paddingBottom: tokens.spacing.xl,
+        paddingBottom: tokens.spacing.xxl + 20,
         gap: tokens.spacing.md,
     },
     button: {

@@ -11,7 +11,7 @@ DECLARE
     event_ts TIMESTAMP WITH TIME ZONE;
     med_duration INTEGER;
     med_frequency INTEGER;
-    start_date DATE;
+    start_ts TIMESTAMP WITH TIME ZONE;
 BEGIN
     -- Get current user ID
     target_user_id := auth.uid();
@@ -54,19 +54,30 @@ BEGIN
         -- Default duration to 7 days if not set, or use medication's duration
         med_duration := COALESCE(med.duration_days, 7);
         
-        -- Start scheduling from tomorrow (matching app logic) or next day of start_date
-        start_date := (NOW() + INTERVAL '1 day')::DATE;
+        -- Start scheduling from now, rounded up to next :00 or :30
+        start_ts := date_trunc('hour', NOW()) +
+            CASE
+                WHEN EXTRACT(MINUTE FROM NOW()) = 0 THEN INTERVAL '0 minutes'
+                WHEN EXTRACT(MINUTE FROM NOW()) <= 30 THEN INTERVAL '30 minutes'
+                ELSE INTERVAL '1 hour'
+            END;
 
         -- Loop for each day of duration
         FOR day_offset IN 0..(med_duration - 1) LOOP
             
-            -- Schedule times for the day: 00:00 start to capture all doses
+            -- Schedule times for the day based on frequency
             hour_offset := 0;
             WHILE hour_offset < 24 LOOP
                 
                 -- Construct timestamp
-                event_ts := (start_date + make_interval(days => day_offset) + make_interval(hours => hour_offset));
+                event_ts := (start_ts::DATE + make_interval(days => day_offset) + make_interval(hours => hour_offset));
                 
+                -- Skip events before the start time (relevant for day 0)
+                IF event_ts < start_ts THEN
+                    hour_offset := hour_offset + med_frequency;
+                    CONTINUE;
+                END IF;
+
                 -- Insert event
                 INSERT INTO public.calendar_events (
                     user_id,

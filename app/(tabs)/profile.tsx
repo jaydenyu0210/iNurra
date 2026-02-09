@@ -1,24 +1,157 @@
-import { useState } from 'react';
-import { View, StyleSheet, ScrollView, Alert } from 'react-native';
-import { Text, Card, List, Switch, Divider, Button, Avatar, useTheme, IconButton, Portal, Dialog, TextInput } from 'react-native-paper';
+import { useState, useEffect, useCallback } from 'react';
+import { View, StyleSheet, ScrollView, Alert, KeyboardAvoidingView, Platform, Keyboard } from 'react-native';
+import { Text, Card, List, Button, Avatar, useTheme, IconButton, Portal, Dialog, TextInput } from 'react-native-paper';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { useRouter } from 'expo-router';
+import { useFocusEffect } from '@react-navigation/native';
 import { MaterialCommunityIcons } from '@expo/vector-icons';
 import { useAuth } from '../../src/hooks';
-import { useUIStore } from '../../src/stores';
 import { tokens } from '../../src/theme';
 import { supabase } from '../../src/services/supabase';
+
+interface Contact {
+    id: string;
+    name: string;
+    phone: string;
+    email: string;
+    is_doctor: boolean;
+}
 
 export default function ProfileScreen() {
     const theme = useTheme();
     const router = useRouter();
     const { user, signOut } = useAuth();
-    const { colorScheme, toggleColorScheme } = useUIStore();
 
     // Name editing state
     const [editNameVisible, setEditNameVisible] = useState(false);
     const [newName, setNewName] = useState('');
     const [savingName, setSavingName] = useState(false);
+
+    // Contact management state
+    const [contacts, setContacts] = useState<Contact[]>([]);
+    const [contactDialogVisible, setContactDialogVisible] = useState(false);
+    const [editingContact, setEditingContact] = useState<Contact | null>(null);
+    const [isDoctor, setIsDoctor] = useState(false);
+    const [contactForm, setContactForm] = useState({ name: '', phone: '', email: '' });
+    const [savingContact, setSavingContact] = useState(false);
+
+    // Keyboard visibility state
+    const [isKeyboardVisible, setKeyboardVisible] = useState(false);
+
+    // Listen for keyboard show/hide events
+    useEffect(() => {
+        const keyboardDidShowListener = Keyboard.addListener('keyboardDidShow', () => {
+            setKeyboardVisible(true);
+        });
+        const keyboardDidHideListener = Keyboard.addListener('keyboardDidHide', () => {
+            setKeyboardVisible(false);
+        });
+        return () => {
+            keyboardDidHideListener.remove();
+            keyboardDidShowListener.remove();
+        };
+    }, []);
+
+    // Load contacts on mount and focus
+    const loadContacts = useCallback(async () => {
+        if (!user) return;
+        const { data, error } = await supabase
+            .from('emergency_contacts')
+            .select('id, name, phone, email, is_doctor')
+            .eq('user_id', user.id);
+        if (!error && data) {
+            setContacts(data);
+        }
+    }, [user]);
+
+    useFocusEffect(
+        useCallback(() => {
+            loadContacts();
+        }, [loadContacts])
+    );
+
+    // Get doctor and emergency contact
+    const doctorContact = contacts.find(c => c.is_doctor);
+    const emergencyContact = contacts.find(c => !c.is_doctor);
+
+    // Open dialog to add/edit contact
+    const openContactDialog = (isDoc: boolean, contact?: Contact) => {
+        setIsDoctor(isDoc);
+        if (contact) {
+            setEditingContact(contact);
+            setContactForm({ name: contact.name, phone: contact.phone || '', email: contact.email || '' });
+        } else {
+            setEditingContact(null);
+            setContactForm({ name: '', phone: '', email: '' });
+        }
+        setContactDialogVisible(true);
+    };
+
+    // Save contact
+    const saveContact = async () => {
+        if (!contactForm.name.trim()) {
+            Alert.alert('Error', 'Name is required');
+            return;
+        }
+        if (!user) return;
+        setSavingContact(true);
+        try {
+            if (editingContact) {
+                // Update existing contact
+                const { error } = await supabase
+                    .from('emergency_contacts')
+                    .update({
+                        name: contactForm.name.trim(),
+                        phone: contactForm.phone.trim() || null,
+                        email: contactForm.email.trim() || null,
+                    })
+                    .eq('id', editingContact.id);
+                if (error) throw error;
+            } else {
+                // Insert new contact
+                const { error } = await supabase
+                    .from('emergency_contacts')
+                    .insert({
+                        user_id: user.id,
+                        name: contactForm.name.trim(),
+                        phone: contactForm.phone.trim() || null,
+                        email: contactForm.email.trim() || null,
+                        is_doctor: isDoctor,
+                    });
+                if (error) throw error;
+            }
+            setContactDialogVisible(false);
+            loadContacts();
+        } catch (err: any) {
+            Alert.alert('Error', err.message || 'Failed to save contact');
+        } finally {
+            setSavingContact(false);
+        }
+    };
+
+    // Delete contact
+    const deleteContact = (contact: Contact) => {
+        Alert.alert(
+            'Delete Contact',
+            `Are you sure you want to delete ${contact.name}?`,
+            [
+                { text: 'Cancel', style: 'cancel' },
+                {
+                    text: 'Delete',
+                    style: 'destructive',
+                    onPress: async () => {
+                        const { error } = await supabase
+                            .from('emergency_contacts')
+                            .delete()
+                            .eq('id', contact.id);
+                        if (!error) {
+                            loadContacts();
+                        }
+                    },
+                },
+            ]
+        );
+    };
 
     const handleSignOut = () => {
         Alert.alert(
@@ -116,17 +249,25 @@ export default function ProfileScreen() {
 
                 {/* Edit Name Dialog */}
                 <Portal>
-                    <Dialog visible={editNameVisible} onDismiss={() => setEditNameVisible(false)} style={{ backgroundColor: theme.colors.surface }}>
+                    <Dialog 
+                        visible={editNameVisible} 
+                        onDismiss={() => setEditNameVisible(false)} 
+                        style={isKeyboardVisible ? { backgroundColor: theme.colors.surface, transform: [{ translateY: -160 }] } : { backgroundColor: theme.colors.surface }}
+                    >
                         <Dialog.Title style={{ color: theme.colors.onSurface }}>Edit Name</Dialog.Title>
-                        <Dialog.Content>
-                            <TextInput
-                                label="Full Name"
-                                value={newName}
-                                onChangeText={setNewName}
-                                mode="outlined"
-                                autoFocus
-                            />
-                        </Dialog.Content>
+                        <Dialog.ScrollArea style={{ paddingHorizontal: 0 }}>
+                            <KeyboardAvoidingView behavior={Platform.OS === 'ios' ? 'padding' : 'height'}>
+                                <ScrollView keyboardShouldPersistTaps="handled" contentContainerStyle={{ paddingHorizontal: 24, paddingVertical: 16 }}>
+                                    <TextInput
+                                        label="Full Name"
+                                        value={newName}
+                                        onChangeText={setNewName}
+                                        mode="outlined"
+                                        autoFocus
+                                    />
+                                </ScrollView>
+                            </KeyboardAvoidingView>
+                        </Dialog.ScrollArea>
                         <Dialog.Actions>
                             <Button onPress={() => setEditNameVisible(false)} textColor={theme.colors.onSurfaceVariant}>Cancel</Button>
                             <Button onPress={saveName} loading={savingName} disabled={savingName}>Save</Button>
@@ -134,87 +275,94 @@ export default function ProfileScreen() {
                     </Dialog>
                 </Portal>
 
-                {/* Settings Sections */}
+                {/* Add/Edit Contact Dialog */}
+                <Portal>
+                    <Dialog 
+                        visible={contactDialogVisible} 
+                        onDismiss={() => setContactDialogVisible(false)} 
+                        style={isKeyboardVisible ? { backgroundColor: theme.colors.surface, transform: [{ translateY: -160 }] } : { backgroundColor: theme.colors.surface }}
+                    >
+                        <Dialog.Title style={{ color: theme.colors.onSurface }}>
+                            {editingContact ? 'Edit' : 'Add'} {isDoctor ? 'Doctor' : 'Emergency Contact'}
+                        </Dialog.Title>
+                        <Dialog.ScrollArea style={{ paddingHorizontal: 0 }}>
+                            <KeyboardAvoidingView behavior={Platform.OS === 'ios' ? 'padding' : 'height'}>
+                                <ScrollView keyboardShouldPersistTaps="handled" contentContainerStyle={{ paddingHorizontal: 24, paddingVertical: 16, gap: 12 }}>
+                                    <TextInput
+                                        label="Name *"
+                                        value={contactForm.name}
+                                        onChangeText={(text) => setContactForm(prev => ({ ...prev, name: text }))}
+                                        mode="outlined"
+                                        autoFocus
+                                    />
+                                    <TextInput
+                                        label="Phone Number"
+                                        value={contactForm.phone}
+                                        onChangeText={(text) => setContactForm(prev => ({ ...prev, phone: text }))}
+                                        mode="outlined"
+                                        keyboardType="phone-pad"
+                                    />
+                                    <TextInput
+                                        label="Email"
+                                        value={contactForm.email}
+                                        onChangeText={(text) => setContactForm(prev => ({ ...prev, email: text }))}
+                                        mode="outlined"
+                                        keyboardType="email-address"
+                                        autoCapitalize="none"
+                                    />
+                                </ScrollView>
+                            </KeyboardAvoidingView>
+                        </Dialog.ScrollArea>
+                        <Dialog.Actions>
+                            <Button onPress={() => setContactDialogVisible(false)} textColor={theme.colors.onSurfaceVariant}>Cancel</Button>
+                            <Button onPress={saveContact} loading={savingContact} disabled={savingContact}>Save</Button>
+                        </Dialog.Actions>
+                    </Dialog>
+                </Portal>
+
+                {/* Contacts Section */}
                 <Card style={styles.settingsCard} mode="elevated">
                     <List.Section>
-                        <List.Subheader style={{ color: theme.colors.primary }}>Appearance</List.Subheader>
+                        <List.Subheader style={{ color: theme.colors.primary }}>Contacts</List.Subheader>
+                        
+                        {/* Doctor Contact */}
                         <List.Item
-                            title="Dark Mode"
-                            description="Use dark theme throughout the app"
-                            left={(props) => <List.Icon {...props} icon="theme-light-dark" />}
+                            title="Doctor"
+                            description={doctorContact ? `${doctorContact.name}${doctorContact.phone ? ` • ${doctorContact.phone}` : ''}` : 'Not set - tap to add'}
+                            left={(props) => <List.Icon {...props} icon="doctor" />}
                             right={() => (
-                                <Switch
-                                    value={colorScheme === 'dark'}
-                                    onValueChange={toggleColorScheme}
-                                />
+                                <View style={{ flexDirection: 'row', alignItems: 'center' }}>
+                                    {doctorContact && (
+                                        <IconButton
+                                            icon="delete-outline"
+                                            size={20}
+                                            onPress={() => deleteContact(doctorContact)}
+                                        />
+                                    )}
+                                    <List.Icon icon={doctorContact ? "pencil" : "plus"} />
+                                </View>
                             )}
+                            onPress={() => openContactDialog(true, doctorContact)}
                         />
-                    </List.Section>
-                    <Divider />
-                    <List.Section>
-                        <List.Subheader style={{ color: theme.colors.primary }}>Notifications</List.Subheader>
-                        <List.Item
-                            title="Medication Reminders"
-                            description="Get notified when it's time to take medication"
-                            left={(props) => <List.Icon {...props} icon="pill" />}
-                            right={() => <Switch value={true} onValueChange={() => { }} />}
-                        />
-                        <List.Item
-                            title="Appointment Reminders"
-                            description="Get notified before appointments"
-                            left={(props) => <List.Icon {...props} icon="calendar-clock" />}
-                            right={() => <Switch value={true} onValueChange={() => { }} />}
-                        />
-                    </List.Section>
-                </Card>
 
-                <Card style={styles.settingsCard} mode="elevated">
-                    <List.Section>
-                        <List.Subheader style={{ color: theme.colors.primary }}>Health Data</List.Subheader>
+                        {/* Emergency Contact */}
                         <List.Item
-                            title="Emergency Contacts"
-                            description="Manage emergency contacts"
+                            title="Emergency Contact"
+                            description={emergencyContact ? `${emergencyContact.name}${emergencyContact.phone ? ` • ${emergencyContact.phone}` : ''}` : 'Not set - tap to add'}
                             left={(props) => <List.Icon {...props} icon="account-alert" />}
-                            right={(props) => <List.Icon {...props} icon="chevron-right" />}
-                            onPress={() => { }}
-                        />
-                        <List.Item
-                            title="Export Data"
-                            description="Download all your health data"
-                            left={(props) => <List.Icon {...props} icon="download" />}
-                            right={(props) => <List.Icon {...props} icon="chevron-right" />}
-                            onPress={() => { }}
-                        />
-                        <List.Item
-                            title="Connected Devices"
-                            description="Manage connected health devices"
-                            left={(props) => <List.Icon {...props} icon="watch" />}
-                            right={(props) => <List.Icon {...props} icon="chevron-right" />}
-                            onPress={() => { }}
-                        />
-                    </List.Section>
-                </Card>
-
-                <Card style={styles.settingsCard} mode="elevated">
-                    <List.Section>
-                        <List.Subheader style={{ color: theme.colors.primary }}>Support</List.Subheader>
-                        <List.Item
-                            title="Help Center"
-                            left={(props) => <List.Icon {...props} icon="help-circle" />}
-                            right={(props) => <List.Icon {...props} icon="chevron-right" />}
-                            onPress={() => { }}
-                        />
-                        <List.Item
-                            title="Privacy Policy"
-                            left={(props) => <List.Icon {...props} icon="shield-account" />}
-                            right={(props) => <List.Icon {...props} icon="chevron-right" />}
-                            onPress={() => { }}
-                        />
-                        <List.Item
-                            title="Terms of Service"
-                            left={(props) => <List.Icon {...props} icon="file-document" />}
-                            right={(props) => <List.Icon {...props} icon="chevron-right" />}
-                            onPress={() => { }}
+                            right={() => (
+                                <View style={{ flexDirection: 'row', alignItems: 'center' }}>
+                                    {emergencyContact && (
+                                        <IconButton
+                                            icon="delete-outline"
+                                            size={20}
+                                            onPress={() => deleteContact(emergencyContact)}
+                                        />
+                                    )}
+                                    <List.Icon icon={emergencyContact ? "pencil" : "plus"} />
+                                </View>
+                            )}
+                            onPress={() => openContactDialog(false, emergencyContact)}
                         />
                     </List.Section>
                 </Card>
@@ -230,7 +378,7 @@ export default function ProfileScreen() {
                         Sign Out
                     </Button>
                     <Text variant="bodySmall" style={[styles.version, { color: theme.colors.onSurfaceVariant }]}>
-                        HealthCompanion v1.0.0
+                        iNurra v1.0.0
                     </Text>
                 </View>
             </ScrollView>

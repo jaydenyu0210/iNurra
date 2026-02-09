@@ -1,6 +1,6 @@
 import { useState, useEffect } from 'react';
 import { View, StyleSheet, ScrollView, Image, Dimensions, ActivityIndicator, Alert } from 'react-native';
-import { Text, Card, Button, useTheme, IconButton } from 'react-native-paper';
+import { Text, Card, Button, useTheme, IconButton, Chip } from 'react-native-paper';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { useRouter, useLocalSearchParams } from 'expo-router';
 import { MaterialCommunityIcons } from '@expo/vector-icons';
@@ -8,20 +8,14 @@ import { tokens } from '../../src/theme';
 import { supabase } from '../../src/services/supabase';
 import { useAuth } from '../../src/hooks';
 import { deleteDocument } from '../../src/services/api';
+import { BodyCondition, BodilyExcretion, TodoItem, Document as DatabaseDocument } from '../../src/types/database';
+import { BodyConditionList } from '../../src/components/documents/BodyConditionList';
+import { ExcretionList } from '../../src/components/documents/ExcretionList';
+import { TodoList } from '../../src/components/documents/TodoList';
 
 const { width } = Dimensions.get('window');
 
-interface Document {
-    id: string;
-    user_id: string;
-    type: string;
-    file_name: string;
-    storage_path: string;
-    title?: string;
-    summary?: string;
-    extracted_text?: string;
-    created_at: string;
-}
+type Document = DatabaseDocument;
 
 interface Medication {
     id: string;
@@ -48,6 +42,9 @@ export default function DocumentDetailScreen() {
     const [imageUrl, setImageUrl] = useState<string | null>(null);
     const [medications, setMedications] = useState<Medication[]>([]);
     const [metrics, setMetrics] = useState<HealthMetric[]>([]);
+    const [bodyConditions, setBodyConditions] = useState<BodyCondition[]>([]);
+    const [excretions, setExcretions] = useState<BodilyExcretion[]>([]);
+    const [todos, setTodos] = useState<TodoItem[]>([]);
     const [loading, setLoading] = useState(true);
     const [error, setError] = useState<string | null>(null);
 
@@ -55,6 +52,12 @@ export default function DocumentDetailScreen() {
         async function fetchDocument() {
             if (!id || !user?.id) {
                 setError('Document not found');
+                setLoading(false);
+                return;
+            }
+
+            if (!supabase) {
+                setError('Database connection error');
                 setLoading(false);
                 return;
             }
@@ -94,7 +97,6 @@ export default function DocumentDetailScreen() {
                     .from('medications')
                     .select('id, name, dosage, frequency, instructions')
                     .eq('source_document_id', id);
-
                 setMedications(meds || []);
 
                 // Fetch related health metrics
@@ -102,8 +104,28 @@ export default function DocumentDetailScreen() {
                     .from('health_metrics')
                     .select('id, metric_type, value, unit')
                     .eq('source_document_id', id);
-
                 setMetrics(healthMetrics || []);
+
+                // Fetch body conditions
+                const { data: conditions } = await supabase
+                    .from('body_conditions')
+                    .select('*')
+                    .eq('document_id', id);
+                setBodyConditions(conditions || []);
+
+                // Fetch bodily excretions
+                const { data: bodilyExcretions } = await supabase
+                    .from('bodily_excretions')
+                    .select('*')
+                    .eq('document_id', id);
+                setExcretions(bodilyExcretions || []);
+
+                // Fetch todo items
+                const { data: todoItems } = await supabase
+                    .from('todo_items')
+                    .select('*')
+                    .eq('document_id', id);
+                setTodos(todoItems || []);
 
             } catch (err) {
                 console.error('Error fetching document:', err);
@@ -129,7 +151,7 @@ export default function DocumentDetailScreen() {
 
     const handleDelete = () => {
         if (!document) return;
-        
+
         Alert.alert(
             'Delete Document',
             `Are you sure you want to delete "${document.title || document.file_name}"? This will also remove any extracted data.`,
@@ -224,17 +246,25 @@ export default function DocumentDetailScreen() {
                 {/* Summary Card */}
                 <Card style={styles.summaryCard} mode="elevated">
                     <Card.Content>
-                        <Text variant="titleMedium" style={{ color: theme.colors.onSurface, marginBottom: tokens.spacing.sm }}>
+                        <Text variant="labelLarge" style={{ color: theme.colors.primary, marginBottom: 4 }}>
                             Summary
                         </Text>
-                        <Text variant="bodyMedium" style={{ color: theme.colors.onSurfaceVariant, lineHeight: 22 }}>
+                        <Text variant="bodyMedium" style={{ color: theme.colors.onSurface, lineHeight: 22, marginBottom: tokens.spacing.md }}>
                             {document.summary || 'No summary available for this document.'}
                         </Text>
-                        <Text variant="labelSmall" style={{ color: theme.colors.outline, marginTop: tokens.spacing.md }}>
-                            Uploaded: {formatDate(document.created_at)}
+                        <Text variant="labelLarge" style={{ color: theme.colors.primary, marginBottom: 4 }}>
+                            Recorded At
+                        </Text>
+                        <Text variant="bodyMedium" style={{ color: theme.colors.onSurface }}>
+                            {formatDate(document.created_at)}
                         </Text>
                     </Card.Content>
                 </Card>
+
+                {/* New Components */}
+                <BodyConditionList conditions={bodyConditions} />
+                <ExcretionList excretions={excretions} />
+                <TodoList todos={todos} />
 
                 {/* Extracted Medications */}
                 {medications.length > 0 && (
@@ -334,6 +364,15 @@ const styles = StyleSheet.create({
         width: '100%',
         height: width * 0.8,
         backgroundColor: '#f0f0f0',
+    },
+    labelsContainer: {
+        flexDirection: 'row',
+        flexWrap: 'wrap',
+        gap: tokens.spacing.sm,
+        marginBottom: tokens.spacing.lg,
+    },
+    labelChip: {
+        backgroundColor: '#E8DEF8', // Surface Variant
     },
     summaryCard: {
         borderRadius: tokens.radius.lg,
