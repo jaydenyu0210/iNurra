@@ -1,6 +1,6 @@
 # iNurra
 
-> Your private nurse in your pocket—making care easier, one photo at a time.
+Your private nurse in your pocket—making care easier, one photo at a time.
 
 ## Download
 [![Download on the App Store](https://img.shields.io/badge/Download-on%20the%20App%20Store-blue?style=for-the-badge&logo=apple)](https://apps.apple.com/us/app/inurra/id6741772648)
