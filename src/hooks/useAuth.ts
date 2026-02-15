@@ -10,6 +10,7 @@ export const useAuth = () => {
         signInWithOtp,
         verifyOtp,
         signOut,
+        deleteAccount,
         initialize,
         setDevSession,
     } = useAuthStore();
@@ -27,6 +28,7 @@ export const useAuth = () => {
         signInWithOtp,
         verifyOtp,
         signOut,
+        deleteAccount,
         setDevSession,
     };
 };

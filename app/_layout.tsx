@@ -31,7 +31,7 @@ function AuthProvider({ children }: { children: React.ReactNode }) {
 
         if (!isInitialized) return;
 
-        const inAuthGroup = segments[0] === '(auth)';
+        const inAuthGroup = segments[0] === '(auth)' || segments[0] === 'privacy';
 
         // In DEV_MODE, always go to tabs
         if (DEV_MODE) {
@@ -55,7 +55,7 @@ import { GestureHandlerRootView } from 'react-native-gesture-handler';
 
 export default function RootLayout() {
     const segments = useSegments();
-    const hideFooter = segments[0] === '(auth)';
+    const hideFooter = segments[0] === '(auth)' || segments[0] === 'privacy';
 
     return (
         <QueryClientProvider client={queryClient}>
@@ -69,6 +69,16 @@ export default function RootLayout() {
                                     <Stack.Screen name="(tabs)" options={{ headerShown: false }} />
                                     <Stack.Screen name="documents" options={{ headerShown: false }} />
                                     <Stack.Screen name="chat" options={{ headerShown: false }} />
+                                    <Stack.Screen
+                                        name="privacy"
+                                        options={{
+                                            presentation: 'formSheet',
+                                            headerShown: true,
+                                            title: 'Privacy Policy',
+                                            sheetAllowedDetents: [1.0],
+                                            sheetGrabberVisible: true,
+                                        }}
+                                    />
                                 </Stack>
                                 {!hideFooter && <AppFooter />}
                             </View>
