@@ -6,9 +6,11 @@ import { useRouter } from 'expo-router';
 import { MaterialCommunityIcons } from '@expo/vector-icons';
 import { Audio } from 'expo-av';
 import * as FileSystem from 'expo-file-system/legacy';
+import AsyncStorage from '@react-native-async-storage/async-storage';
 import { tokens } from '../theme/tokens';
 import { sendChatMessage, transcribeAudio } from '../services/api';
 import { supabase } from '../services/supabase';
+import { AIDataConsentDialog } from './AIDataConsentDialog';
 
 const { width, height } = Dimensions.get('window');
 
@@ -30,23 +32,59 @@ export function AppFooter() {
     const insets = useSafeAreaInsets();
     const [isDialogueOpen, setIsDialogueOpen] = useState(false);
     const [inputText, setInputText] = useState('');
-    
+
     // Chat state
     const [messages, setMessages] = useState<ChatMessage[]>([]);
     const [isLoading, setIsLoading] = useState(false);
     const [sessionId, setSessionId] = useState<string | undefined>(undefined);
     const scrollViewRef = useRef<ScrollView>(null);
-    
+
     // Voice mode state - toggles between text input and hold-to-speak
     const [isVoiceMode, setIsVoiceMode] = useState(false);
-    
+
     // Voice recording state
     const [isRecording, setIsRecording] = useState(false);
     const [isTranscribing, setIsTranscribing] = useState(false);
     const recordingRef = useRef<Audio.Recording | null>(null);
-    
+
     // Menu state
     const [menuVisible, setMenuVisible] = useState(false);
+
+    // AI data consent state
+    const [consentGranted, setConsentGranted] = useState(false);
+    const [consentChecked, setConsentChecked] = useState(false);
+    const [showConsentDialog, setShowConsentDialog] = useState(false);
+
+    // Check AI data consent on mount
+    useEffect(() => {
+        async function checkConsent() {
+            try {
+                const consent = await AsyncStorage.getItem('ai_data_consent_granted');
+                setConsentGranted(consent === 'true');
+            } catch (e) {
+                console.error('Error checking AI consent:', e);
+            } finally {
+                setConsentChecked(true);
+            }
+        }
+        checkConsent();
+    }, []);
+
+    const handleConsentGranted = async () => {
+        try {
+            await AsyncStorage.setItem('ai_data_consent_granted', 'true');
+            setConsentGranted(true);
+            setShowConsentDialog(false);
+            // Now open the chat since they consented
+            openChatDialogue();
+        } catch (e) {
+            console.error('Error saving AI consent:', e);
+        }
+    };
+
+    const handleConsentDeclined = () => {
+        setShowConsentDialog(false);
+    };
 
     // Animations
     const dialogTranslateY = useRef(new Animated.Value(height)).current;
@@ -70,7 +108,7 @@ export function AppFooter() {
                 if (sessions && sessions.length > 0) {
                     const latestSession = sessions[0] as { id: string };
                     setSessionId(latestSession.id);
-                    
+
                     // Load messages from this session
                     const { data: msgs } = await supabase
                         .from('chat_messages')
@@ -124,6 +162,15 @@ export function AppFooter() {
         }).start();
     };
 
+    // Wrapper that checks consent before opening chat
+    const handleAskNurra = () => {
+        if (consentChecked && !consentGranted) {
+            setShowConsentDialog(true);
+        } else {
+            openChatDialogue();
+        }
+    };
+
     const closeChatDialogue = () => {
         Keyboard.dismiss();
         Animated.timing(dialogTranslateY, {
@@ -162,7 +209,7 @@ export function AppFooter() {
 
         try {
             const response = await sendChatMessage(messageText, sessionId);
-            
+
             if (response.sessionId) {
                 setSessionId(response.sessionId);
             }
@@ -174,14 +221,14 @@ export function AppFooter() {
                     .replace(/^\n+/, '')          // Remove leading newlines
                     .replace(/\n+$/, '')          // Remove trailing newlines
                     .trim();
-                
+
                 const aiMessage: ChatMessage = {
                     id: (Date.now() + 1).toString(),
                     role: 'assistant',
                     content: cleanedMessage,
                 };
                 setMessages(prev => [...prev, aiMessage]);
-                
+
                 // Scroll to bottom after AI response
                 setTimeout(() => {
                     scrollViewRef.current?.scrollToEnd({ animated: true });
@@ -237,7 +284,7 @@ export function AppFooter() {
                     encoding: FileSystem.EncodingType.Base64,
                 });
                 const { text } = await transcribeAudio(base64Audio);
-                
+
                 if (text) {
                     // Put transcribed text in input field and switch to keyboard mode
                     setInputText(text);
@@ -269,8 +316,8 @@ export function AppFooter() {
                 <View
                     style={[
                         styles.messageBubble,
-                        isUser 
-                            ? { backgroundColor: theme.colors.primary } 
+                        isUser
+                            ? { backgroundColor: theme.colors.primary }
                             : { backgroundColor: theme.colors.surfaceVariant },
                     ]}
                 >
@@ -287,10 +334,16 @@ export function AppFooter() {
 
     return (
         <>
+            {/* AI Data Consent Dialog */}
+            <AIDataConsentDialog
+                visible={showConsentDialog}
+                onConsent={handleConsentGranted}
+                onDecline={handleConsentDeclined}
+            />
             {/* Tap-outside overlay to close chat */}
             {isDialogueOpen && (
-                <Pressable 
-                    style={styles.overlay} 
+                <Pressable
+                    style={styles.overlay}
                     onPress={closeChatDialogue}
                 />
             )}
@@ -304,11 +357,11 @@ export function AppFooter() {
             >
                 {/* Half-Screen Chat Dialogue */}
                 {isDialogueOpen && (
-                    <Animated.View 
+                    <Animated.View
                         style={[
-                            styles.dialogueContainer, 
-                            { 
-                                transform: [{ translateY: dialogTranslateY }], 
+                            styles.dialogueContainer,
+                            {
+                                transform: [{ translateY: dialogTranslateY }],
                                 backgroundColor: theme.colors.surface,
                                 height: height * 0.42,
                                 maxHeight: height - insets.top - 80, // Don't extend past safe area (80 = footer height)
@@ -326,23 +379,23 @@ export function AppFooter() {
                                     visible={menuVisible}
                                     onDismiss={() => setMenuVisible(false)}
                                     anchor={
-                                        <IconButton 
-                                            icon="dots-vertical" 
-                                            size={24} 
+                                        <IconButton
+                                            icon="dots-vertical"
+                                            size={24}
                                             onPress={() => setMenuVisible(true)}
                                             style={{ margin: 0 }}
                                         />
                                     }
                                 >
-                                    <Menu.Item 
-                                        onPress={handleClearHistory} 
+                                    <Menu.Item
+                                        onPress={handleClearHistory}
                                         title="Clear History"
                                         leadingIcon="delete-outline"
                                     />
                                 </Menu>
-                                <IconButton 
-                                    icon="close" 
-                                    size={24} 
+                                <IconButton
+                                    icon="close"
+                                    size={24}
                                     onPress={closeChatDialogue}
                                     style={{ margin: 0 }}
                                 />
@@ -350,7 +403,7 @@ export function AppFooter() {
                         </View>
 
                         {/* Chat Messages */}
-                        <ScrollView 
+                        <ScrollView
                             ref={scrollViewRef}
                             style={styles.messagesContainer}
                             contentContainerStyle={styles.messagesContent}
@@ -367,7 +420,7 @@ export function AppFooter() {
                             ) : (
                                 messages.map(renderMessage)
                             )}
-                            
+
                             {/* Loading indicator */}
                             {isLoading && (
                                 <View style={[styles.messageContainer, styles.assistantMessageContainer]}>
@@ -385,102 +438,102 @@ export function AppFooter() {
 
                 {/* Footer Bar */}
                 <Surface style={[styles.container, { backgroundColor: theme.colors.surface }]} elevation={4}>
-                {/* Left: Camera (hidden when chat is open) */}
-                {!isDialogueOpen && (
-                    <IconButton
-                        icon="camera-outline"
-                        size={32}
-                        iconColor={theme.colors.onSurface}
-                        onPress={handleCameraPress}
-                        style={[styles.sideButton, { marginLeft: 4 }]}
-                    />
-                )}
-
-                {/* Center: Interaction Area */}
-                <View style={[styles.centerContainer, isDialogueOpen && { flex: 3, paddingHorizontal: 10 }]}>
-                    {isDialogueOpen ? (
-                        isVoiceMode ? (
-                            // Voice mode: Hold to speak button
-                            <Pressable
-                                style={[
-                                    styles.holdToSpeakButton,
-                                    { 
-                                        backgroundColor: isRecording 
-                                            ? theme.colors.errorContainer 
-                                            : theme.colors.surfaceVariant,
-                                    }
-                                ]}
-                                onPressIn={startRecording}
-                                onPressOut={stopRecording}
-                                disabled={isTranscribing || isLoading}
-                            >
-                                <MaterialCommunityIcons 
-                                    name={isRecording ? "microphone" : "microphone-outline"} 
-                                    size={24} 
-                                    color={isRecording ? theme.colors.error : theme.colors.onSurfaceVariant} 
-                                    style={{ marginRight: 8 }}
-                                />
-                                <Text 
-                                    variant="bodyLarge" 
-                                    style={{ 
-                                        color: isRecording ? theme.colors.error : theme.colors.onSurfaceVariant,
-                                        fontWeight: '500',
-                                    }}
-                                >
-                                    {isTranscribing ? 'Transcribing...' : isRecording ? 'Recording...' : 'Hold to speak'}
-                                </Text>
-                            </Pressable>
-                        ) : (
-                            // Keyboard mode: Text input with send button
-                            <View style={styles.inputRow}>
-                                <TextInput
-                                    style={[styles.inputField, { backgroundColor: theme.colors.surfaceVariant, color: theme.colors.onSurface }]}
-                                    placeholder="Type a message..."
-                                    placeholderTextColor={theme.colors.onSurfaceVariant}
-                                    value={inputText}
-                                    onChangeText={setInputText}
-                                    onSubmitEditing={() => handleSendMessage()}
-                                    returnKeyType="send"
-                                    editable={!isLoading}
-                                    multiline={true}
-                                    numberOfLines={3}
-                                    textAlignVertical="center"
-                                />
-                                <IconButton
-                                    icon="send"
-                                    size={24}
-                                    iconColor={inputText.trim() ? theme.colors.primary : theme.colors.outline}
-                                    onPress={() => handleSendMessage()}
-                                    disabled={!inputText.trim() || isLoading}
-                                    style={{ margin: 0 }}
-                                />
-                            </View>
-                        )
-                    ) : (
-                        // Default state: Empty center
-                        <View />
+                    {/* Left: Camera (hidden when chat is open) */}
+                    {!isDialogueOpen && (
+                        <IconButton
+                            icon="camera-outline"
+                            size={32}
+                            iconColor={theme.colors.onSurface}
+                            onPress={handleCameraPress}
+                            style={[styles.sideButton, { marginLeft: 4 }]}
+                        />
                     )}
-                </View>
 
-                {/* Right: Ask Nurra button or Mode Toggle */}
-                {!isDialogueOpen ? (
-                    <Pressable
-                        style={[styles.askAiButton, { backgroundColor: theme.colors.primaryContainer }]}
-                        onPress={openChatDialogue}
-                    >
-                        <Text variant="labelLarge" style={{ color: theme.colors.onPrimaryContainer, fontWeight: '600' }}>Ask Nurra</Text>
-                    </Pressable>
-                ) : (
-                    <IconButton
-                        icon={isVoiceMode ? 'keyboard' : 'microphone'}
-                        size={28}
-                        iconColor={theme.colors.onSurface}
-                        onPress={() => setIsVoiceMode(!isVoiceMode)}
-                        style={styles.sideButton}
-                        disabled={isTranscribing || isLoading}
-                    />
-                )}
-            </Surface>
+                    {/* Center: Interaction Area */}
+                    <View style={[styles.centerContainer, isDialogueOpen && { flex: 3, paddingHorizontal: 10 }]}>
+                        {isDialogueOpen ? (
+                            isVoiceMode ? (
+                                // Voice mode: Hold to speak button
+                                <Pressable
+                                    style={[
+                                        styles.holdToSpeakButton,
+                                        {
+                                            backgroundColor: isRecording
+                                                ? theme.colors.errorContainer
+                                                : theme.colors.surfaceVariant,
+                                        }
+                                    ]}
+                                    onPressIn={startRecording}
+                                    onPressOut={stopRecording}
+                                    disabled={isTranscribing || isLoading}
+                                >
+                                    <MaterialCommunityIcons
+                                        name={isRecording ? "microphone" : "microphone-outline"}
+                                        size={24}
+                                        color={isRecording ? theme.colors.error : theme.colors.onSurfaceVariant}
+                                        style={{ marginRight: 8 }}
+                                    />
+                                    <Text
+                                        variant="bodyLarge"
+                                        style={{
+                                            color: isRecording ? theme.colors.error : theme.colors.onSurfaceVariant,
+                                            fontWeight: '500',
+                                        }}
+                                    >
+                                        {isTranscribing ? 'Transcribing...' : isRecording ? 'Recording...' : 'Hold to speak'}
+                                    </Text>
+                                </Pressable>
+                            ) : (
+                                // Keyboard mode: Text input with send button
+                                <View style={styles.inputRow}>
+                                    <TextInput
+                                        style={[styles.inputField, { backgroundColor: theme.colors.surfaceVariant, color: theme.colors.onSurface }]}
+                                        placeholder="Type a message..."
+                                        placeholderTextColor={theme.colors.onSurfaceVariant}
+                                        value={inputText}
+                                        onChangeText={setInputText}
+                                        onSubmitEditing={() => handleSendMessage()}
+                                        returnKeyType="send"
+                                        editable={!isLoading}
+                                        multiline={true}
+                                        numberOfLines={3}
+                                        textAlignVertical="center"
+                                    />
+                                    <IconButton
+                                        icon="send"
+                                        size={24}
+                                        iconColor={inputText.trim() ? theme.colors.primary : theme.colors.outline}
+                                        onPress={() => handleSendMessage()}
+                                        disabled={!inputText.trim() || isLoading}
+                                        style={{ margin: 0 }}
+                                    />
+                                </View>
+                            )
+                        ) : (
+                            // Default state: Empty center
+                            <View />
+                        )}
+                    </View>
+
+                    {/* Right: Ask Nurra button or Mode Toggle */}
+                    {!isDialogueOpen ? (
+                        <Pressable
+                            style={[styles.askAiButton, { backgroundColor: theme.colors.primaryContainer }]}
+                            onPress={handleAskNurra}
+                        >
+                            <Text variant="labelLarge" style={{ color: theme.colors.onPrimaryContainer, fontWeight: '600' }}>Ask Nurra</Text>
+                        </Pressable>
+                    ) : (
+                        <IconButton
+                            icon={isVoiceMode ? 'keyboard' : 'microphone'}
+                            size={28}
+                            iconColor={theme.colors.onSurface}
+                            onPress={() => setIsVoiceMode(!isVoiceMode)}
+                            style={styles.sideButton}
+                            disabled={isTranscribing || isLoading}
+                        />
+                    )}
+                </Surface>
             </KeyboardAvoidingView>
         </>
     );

@@ -30,7 +30,7 @@ export default function PrivacyPolicyScreen() {
                     iNurra Privacy Policy
                 </Text>
                 <Text variant="bodyMedium" style={{ color: theme.colors.onSurfaceVariant, marginBottom: tokens.spacing.lg }}>
-                    Last updated: 2/8/2026
+                    Last updated: 3/8/2026
                 </Text>
                 <Text variant="bodyLarge" style={{ color: theme.colors.onSurfaceVariant, marginBottom: tokens.spacing.lg }}>
                     iNurra (“we,” “our,” or “us”) respects your privacy and is committed to protecting your personal and health information. This Privacy Policy explains how iNurra collects, uses, and safeguards information when you use the iNurra mobile application (the “App”).
@@ -79,8 +79,24 @@ export default function PrivacyPolicyScreen() {
                 </Section>
 
                 <Section title="3. AI and Automated Processing">
-                    <Text variant="bodyMedium" style={{ color: theme.colors.onSurfaceVariant }}>
-                        iNurra uses automated systems and artificial intelligence to analyze user-provided data (such as medical images or documents) in order to deliver App features. All AI-generated insights are provided for informational purposes only and are not a substitute for professional medical advice, diagnosis, or treatment.
+                    <Text variant="bodyMedium" style={{ color: theme.colors.onSurfaceVariant, marginBottom: tokens.spacing.sm }}>
+                        iNurra uses <Text style={{ fontWeight: 'bold' }}>Google's Gemini AI</Text> (a third-party artificial intelligence service provided by Google LLC) to power the Health Assistant chat feature and to analyze user-provided data. When you use the Health Assistant, the following data may be sent to Google's Gemini AI for processing:
+                    </Text>
+                    <Bullet>Your chat messages and questions</Bullet>
+                    <Bullet>Medications (names, dosages, schedules)</Bullet>
+                    <Bullet>Health metrics (e.g. blood pressure readings)</Bullet>
+                    <Bullet>Body conditions and bodily excretions records</Bullet>
+                    <Bullet>Todo items and calendar events</Bullet>
+                    <Bullet>Uploaded medical documents and extracted summaries</Bullet>
+                    <Bullet>Voice audio (if using voice input, for transcription)</Bullet>
+                    <Text variant="bodyMedium" style={{ color: theme.colors.onSurfaceVariant, marginTop: tokens.spacing.sm }}>
+                        This data is sent solely to generate AI-powered responses, health insights, and audio transcriptions. Google processes this data in accordance with Google's own privacy policy and data handling practices.
+                    </Text>
+                    <Text variant="bodyMedium" style={{ color: theme.colors.onSurfaceVariant, marginTop: tokens.spacing.sm }}>
+                        All AI-generated insights are provided for informational purposes only and are not a substitute for professional medical advice, diagnosis, or treatment.
+                    </Text>
+                    <Text variant="bodyMedium" style={{ color: theme.colors.onSurfaceVariant, marginTop: tokens.spacing.sm }}>
+                        You will be asked for your explicit consent before any data is shared with Google's Gemini AI. You may decline and continue using all other features of iNurra without the AI Health Assistant.
                     </Text>
                 </Section>
 
@@ -89,8 +105,12 @@ export default function PrivacyPolicyScreen() {
                         We do not sell, rent, or share your personal or health data with advertisers, data brokers, or third parties for marketing purposes.
                         We may share limited data only:
                     </Text>
+                    <Bullet>With Google's Gemini AI service (provided by Google LLC) to power the Health Assistant chat feature, as described in Section 3 above. This sharing occurs only with your explicit consent.</Bullet>
                     <Bullet>With trusted service providers that help operate the App (such as cloud storage or crash reporting services), strictly for App functionality and reliability</Bullet>
                     <Bullet>When required by law or to protect the safety, rights, or security of users or the App</Bullet>
+                    <Text variant="bodyMedium" style={{ color: theme.colors.onSurfaceVariant, marginTop: tokens.spacing.sm }}>
+                        All third parties that receive user data are required to provide the same or equivalent level of protection as described in this Privacy Policy.
+                    </Text>
                 </Section>
 
                 <Section title="5. Data Retention">

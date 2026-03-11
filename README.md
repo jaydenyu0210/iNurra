@@ -3,7 +3,7 @@
 Your private nurse in your pocket—making care easier, one photo at a time.
 
 ## Download
-[![Download on the App Store](https://img.shields.io/badge/Download-on%20the%20App%20Store-blue?style=for-the-badge&logo=apple)](https://apps.apple.com/us/app/inurra/id6741772648)
+[![Download on the App Store](https://img.shields.io/badge/Download-on%20the%20App%20Store-blue?style=for-the-badge&logo=apple)](https://apps.apple.com/us/app/inurra/id6758828697)
 
 ## Project Inspiration
 As a registered nurse, I see the "Gap" every day. Patients are often discharged with complex plans they simply cannot follow. From "Lose-Lose" to "Win-Win" "Frequent Flyers"—patients trapped in a cycle of readmission. Patients lose their health and dignity, while hospitals lose millions in 30-day readmission penalties.
