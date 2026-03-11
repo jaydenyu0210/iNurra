@@ -6,8 +6,10 @@ import { useRouter, useLocalSearchParams } from 'expo-router';
 import { MaterialCommunityIcons } from '@expo/vector-icons';
 import { Audio } from 'expo-av';
 import * as FileSystem from 'expo-file-system/legacy';
+import AsyncStorage from '@react-native-async-storage/async-storage';
 import { supabase } from '../../src/services/supabase';
 import { tokens } from '../../src/theme';
+import { AIDataConsentDialog } from '../../src/components/AIDataConsentDialog';
 
 // Typewriter Effect Component
 const TypewriterText = ({ content, style, onComplete }: { content: string; style?: any; onComplete?: () => void }) => {
@@ -92,6 +94,41 @@ export default function ChatScreen() {
     const recordingRef = useRef<Audio.Recording | null>(null);
     const [isTranscribing, setIsTranscribing] = useState(false);
     const [isVoiceMode, setIsVoiceMode] = useState(false);
+    const [consentGranted, setConsentGranted] = useState(false);
+    const [consentChecked, setConsentChecked] = useState(false);
+
+    // Check AI data consent on mount
+    useEffect(() => {
+        async function checkConsent() {
+            try {
+                const consent = await AsyncStorage.getItem('ai_data_consent_granted');
+                console.log('[Consent] AsyncStorage value:', consent);
+                const granted = consent === 'true';
+                setConsentGranted(granted);
+                console.log('[Consent] granted:', granted, 'will show dialog:', !granted);
+            } catch (e) {
+                console.error('Error checking AI consent:', e);
+            } finally {
+                setConsentChecked(true);
+                console.log('[Consent] Check complete, consentChecked set to true');
+            }
+        }
+        console.log('[Consent] ChatScreen mounted, checking consent...');
+        checkConsent();
+    }, []);
+
+    const handleConsentGranted = async () => {
+        try {
+            await AsyncStorage.setItem('ai_data_consent_granted', 'true');
+            setConsentGranted(true);
+        } catch (e) {
+            console.error('Error saving AI consent:', e);
+        }
+    };
+
+    const handleConsentDeclined = () => {
+        router.back();
+    };
 
     const startRecording = async () => {
         try {
@@ -337,6 +374,13 @@ export default function ChatScreen() {
 
     return (
         <SafeAreaView style={[styles.container, { backgroundColor: theme.colors.background }]} edges={['top']}>
+            {/* AI Data Consent Dialog */}
+            <AIDataConsentDialog
+                visible={consentChecked && !consentGranted}
+                onConsent={handleConsentGranted}
+                onDecline={handleConsentDeclined}
+            />
+
             {/* Header */}
             <View style={styles.header}>
                 <IconButton

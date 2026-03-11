@@ -20,7 +20,7 @@ interface Contact {
 export default function ProfileScreen() {
     const theme = useTheme();
     const router = useRouter();
-    const { user, signOut } = useAuth();
+    const { user, signOut, deleteAccount } = useAuth();
 
     // Name editing state
     const [editNameVisible, setEditNameVisible] = useState(false);
@@ -34,6 +34,7 @@ export default function ProfileScreen() {
     const [isDoctor, setIsDoctor] = useState(false);
     const [contactForm, setContactForm] = useState({ name: '', phone: '', email: '' });
     const [savingContact, setSavingContact] = useState(false);
+    const [deleting, setDeleting] = useState(false);
 
     // Keyboard visibility state
     const [isKeyboardVisible, setKeyboardVisible] = useState(false);
@@ -164,6 +165,48 @@ export default function ProfileScreen() {
         );
     };
 
+    const handleDeleteAccount = () => {
+        Alert.alert(
+            'Delete Account',
+            'This will permanently delete your account and all your data. This action cannot be undone.',
+            [
+                { text: 'Cancel', style: 'cancel' },
+                {
+                    text: 'Delete',
+                    style: 'destructive',
+                    onPress: () => {
+                        Alert.prompt(
+                            'Confirm Deletion',
+                            'Type DELETE to confirm account deletion.',
+                            [
+                                { text: 'Cancel', style: 'cancel' },
+                                {
+                                    text: 'Confirm',
+                                    style: 'destructive',
+                                    onPress: async (value?: string) => {
+                                        if (value !== 'DELETE') {
+                                            Alert.alert('Error', 'You must type DELETE to confirm.');
+                                            return;
+                                        }
+                                        setDeleting(true);
+                                        const { error } = await deleteAccount();
+                                        setDeleting(false);
+                                        if (error) {
+                                            Alert.alert('Error', error.message || 'Failed to delete account.');
+                                        }
+                                        // On success, auth state clears and app navigates to welcome
+                                    },
+                                },
+                            ],
+                            'plain-text',
+                            '',
+                        );
+                    },
+                },
+            ]
+        );
+    };
+
     const handleEditName = () => {
         setNewName(user?.user_metadata?.full_name || '');
         setEditNameVisible(true);
@@ -249,9 +292,9 @@ export default function ProfileScreen() {
 
                 {/* Edit Name Dialog */}
                 <Portal>
-                    <Dialog 
-                        visible={editNameVisible} 
-                        onDismiss={() => setEditNameVisible(false)} 
+                    <Dialog
+                        visible={editNameVisible}
+                        onDismiss={() => setEditNameVisible(false)}
                         style={isKeyboardVisible ? { backgroundColor: theme.colors.surface, transform: [{ translateY: -160 }] } : { backgroundColor: theme.colors.surface }}
                     >
                         <Dialog.Title style={{ color: theme.colors.onSurface }}>Edit Name</Dialog.Title>
@@ -277,9 +320,9 @@ export default function ProfileScreen() {
 
                 {/* Add/Edit Contact Dialog */}
                 <Portal>
-                    <Dialog 
-                        visible={contactDialogVisible} 
-                        onDismiss={() => setContactDialogVisible(false)} 
+                    <Dialog
+                        visible={contactDialogVisible}
+                        onDismiss={() => setContactDialogVisible(false)}
                         style={isKeyboardVisible ? { backgroundColor: theme.colors.surface, transform: [{ translateY: -160 }] } : { backgroundColor: theme.colors.surface }}
                     >
                         <Dialog.Title style={{ color: theme.colors.onSurface }}>
@@ -324,7 +367,7 @@ export default function ProfileScreen() {
                 <Card style={styles.settingsCard} mode="elevated">
                     <List.Section>
                         <List.Subheader style={{ color: theme.colors.primary }}>Contacts</List.Subheader>
-                        
+
                         {/* Doctor Contact */}
                         <List.Item
                             title="Doctor"
@@ -367,7 +410,7 @@ export default function ProfileScreen() {
                     </List.Section>
                 </Card>
 
-                {/* Sign Out */}
+                {/* Sign Out & Delete Account */}
                 <View style={styles.signOutContainer}>
                     <Button
                         mode="outlined"
@@ -376,6 +419,17 @@ export default function ProfileScreen() {
                         style={styles.signOutButton}
                     >
                         Sign Out
+                    </Button>
+                    <Button
+                        mode="text"
+                        onPress={handleDeleteAccount}
+                        textColor={theme.colors.error}
+                        loading={deleting}
+                        disabled={deleting}
+                        style={styles.deleteButton}
+                        icon="delete-forever"
+                    >
+                        Delete Account
                     </Button>
                     <Text variant="bodySmall" style={[styles.version, { color: theme.colors.onSurfaceVariant }]}>
                         iNurra v1.0.0
@@ -420,6 +474,9 @@ const styles = StyleSheet.create({
     },
     signOutButton: {
         borderColor: '#EA4335',
+        marginBottom: tokens.spacing.sm,
+    },
+    deleteButton: {
         marginBottom: tokens.spacing.md,
     },
     version: {

@@ -1,6 +1,6 @@
 import { View, StyleSheet, Image } from 'react-native';
 import { Text, Button, useTheme } from 'react-native-paper';
-import { useRouter } from 'expo-router';
+import { useRouter, Link } from 'expo-router';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { tokens } from '../../src/theme';
 
@@ -38,7 +38,10 @@ export default function WelcomeScreen() {
                     Get Started
                 </Button>
                 <Text variant="bodySmall" style={[styles.disclaimer, { color: theme.colors.onSurfaceVariant }]}>
-                    By continuing, you agree to our Terms of Service and Privacy Policy
+                    By continuing, you agree to our Terms of Service and{' '}
+                    <Link href="/privacy">
+                        <Text style={{ color: theme.colors.primary, fontWeight: 'bold' }}>Privacy Policy</Text>
+                    </Link>
                 </Text>
             </View>
         </SafeAreaView>
